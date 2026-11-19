@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "devops-ai"
+version = "0.1.0"
+description = "Unified AI-Assisted DevOps suite for infrastructure generation, observability, and autonomous incident diagnosis."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+    { name = "Rahul Reddy" }
+]
+keywords = ["devops", "ai", "llm", "aiops", "observability", "ollama", "gemini"]
+dependencies = [
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.7.0",
+    "typer>=0.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.4.0",
+]
+full = [
+    "ollama>=0.4.0",
+    "google-genai>=1.0.0",
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "scikit-learn>=1.4.0",
+    "psutil>=5.9.0",
+]
+
+[project.scripts]
+devops-ai = "devops_ai.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/devops_ai"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
