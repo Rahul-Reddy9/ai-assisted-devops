@@ -1,0 +1,13 @@
+AI-Assisted DevOps
+
+This project is based on the educational curriculum and code originally created by
+Abhishek Veeramalla (https://github.com/iam-veeramalla/ai-assisted-devops).
+Licensed under the Apache License, Version 2.0.
+
+Original educational materials and source files are attributed to the upstream
+AI-Assisted DevOps project by Abhishek Veeramalla. These materials are distributed
+under the applicable terms of the Apache License, Version 2.0.
+
+New components, including the unified packaging, core modules, test suites,
+and architectural refactoring, are developed by Rahul Reddy
+(https://github.com/Rahul-Reddy9/ai-assisted-devops) and distributed under the Apache License, Version 2.0.
