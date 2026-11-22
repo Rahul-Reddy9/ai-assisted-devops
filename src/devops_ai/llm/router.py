@@ -18,6 +18,7 @@ logger = get_logger("llm.router")
 @dataclass
 class GenerationResult:
     """Structured result returned by LLM generation operations."""
+
     content: str
     provider: str
     model: str

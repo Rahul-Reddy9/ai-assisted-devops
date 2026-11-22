@@ -22,7 +22,7 @@ class BaseLLMProvider(ABC):
     @abstractmethod
     def check_health(self, verify_remote: bool = False) -> bool:
         """Check provider health and readiness.
-        
+
         If verify_remote is False, checks local configuration without network calls.
         If verify_remote is True, performs a live network probe.
         """

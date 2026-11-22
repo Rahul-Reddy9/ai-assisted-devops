@@ -57,6 +57,7 @@ class UniqueKeySafeLoader(yaml.SafeLoader):
 @dataclass
 class K8sValidationResult:
     """Result of Kubernetes manifest validation."""
+
     is_valid: bool
     content: str
     documents: List[Dict[str, Any]] = field(default_factory=list)
@@ -173,16 +174,23 @@ class K8sManifestGenerator:
         try:
             raw_docs = list(yaml.load_all(content, Loader=UniqueKeySafeLoader))
         except yaml.YAMLError as e:
-            raise DevOpsAIError(f"Generated output is not valid YAML: {e}", code="GENERATOR_VALIDATION_ERROR") from None
+            raise DevOpsAIError(
+                f"Generated output is not valid YAML: {e}", code="GENERATOR_VALIDATION_ERROR"
+            ) from None
 
         # 1. Document cardinality and null/scalar checks
         if not raw_docs:
-            raise DevOpsAIError("Generated Kubernetes manifest contains no YAML documents.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Generated Kubernetes manifest contains no YAML documents.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         docs: List[Dict[str, Any]] = []
         for idx, doc in enumerate(raw_docs, 1):
             if doc is None:
-                raise DevOpsAIError(f"YAML document #{idx} is null/empty.", code="GENERATOR_VALIDATION_ERROR")
+                raise DevOpsAIError(
+                    f"YAML document #{idx} is null/empty.", code="GENERATOR_VALIDATION_ERROR"
+                )
             if not isinstance(doc, dict):
                 raise DevOpsAIError(
                     f"YAML document #{idx} is not a valid Kubernetes mapping (got {type(doc).__name__}).",
@@ -204,7 +212,9 @@ class K8sManifestGenerator:
                 code="GENERATOR_VALIDATION_ERROR",
             )
         if len(docs) != 2:
-            extra_kinds = [d.get("kind") for d in docs if d.get("kind") not in ("Deployment", "Service")]
+            extra_kinds = [
+                d.get("kind") for d in docs if d.get("kind") not in ("Deployment", "Service")
+            ]
             raise DevOpsAIError(
                 f"Unexpected Kubernetes resource kinds found: {extra_kinds}. Expected only Deployment and Service.",
                 code="GENERATOR_VALIDATION_ERROR",
@@ -229,30 +239,52 @@ class K8sManifestGenerator:
         dep_meta = deployment_doc.get("metadata")
         svc_meta = service_doc.get("metadata")
         if not isinstance(dep_meta, dict):
-            raise DevOpsAIError("Deployment 'metadata' must be a mapping dictionary.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment 'metadata' must be a mapping dictionary.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
         if not isinstance(svc_meta, dict):
-            raise DevOpsAIError("Service 'metadata' must be a mapping dictionary.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Service 'metadata' must be a mapping dictionary.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         dep_name = dep_meta.get("name")
         svc_name = svc_meta.get("name")
         if not isinstance(dep_name, str) or not dep_name.strip():
-            raise DevOpsAIError("Deployment metadata 'name' must be a non-empty string.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment metadata 'name' must be a non-empty string.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
         if not isinstance(svc_name, str) or not svc_name.strip():
-            raise DevOpsAIError("Service metadata 'name' must be a non-empty string.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Service metadata 'name' must be a non-empty string.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         # Validate RFC 1123 DNS subdomain format
         dns_regex = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
         if not re.match(dns_regex, dep_name):
-            raise DevOpsAIError(f"Deployment name '{dep_name}' is not a valid DNS subdomain name.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                f"Deployment name '{dep_name}' is not a valid DNS subdomain name.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
         if not re.match(dns_regex, svc_name):
-            raise DevOpsAIError(f"Service name '{svc_name}' is not a valid DNS subdomain name.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                f"Service name '{svc_name}' is not a valid DNS subdomain name.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         dep_ns = dep_meta.get("namespace")
         svc_ns = svc_meta.get("namespace")
         if dep_ns is not None and not isinstance(dep_ns, str):
-            raise DevOpsAIError("Deployment namespace must be a string.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment namespace must be a string.", code="GENERATOR_VALIDATION_ERROR"
+            )
         if svc_ns is not None and not isinstance(svc_ns, str):
-            raise DevOpsAIError("Service namespace must be a string.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Service namespace must be a string.", code="GENERATOR_VALIDATION_ERROR"
+            )
 
         # Namespace policy: if expected_namespace is requested, both must match
         if dep_ns != expected_namespace or svc_ns != expected_namespace:
@@ -264,32 +296,52 @@ class K8sManifestGenerator:
         # 4. Deployment spec, selector, and template types
         dep_spec = deployment_doc.get("spec")
         if not isinstance(dep_spec, dict):
-            raise DevOpsAIError("Deployment 'spec' must be a dictionary.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment 'spec' must be a dictionary.", code="GENERATOR_VALIDATION_ERROR"
+            )
 
         selector = dep_spec.get("selector")
         if not isinstance(selector, dict):
-            raise DevOpsAIError("Deployment 'spec.selector' must be a dictionary.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment 'spec.selector' must be a dictionary.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         match_labels = selector.get("matchLabels")
         if not isinstance(match_labels, dict) or len(match_labels) == 0:
-            raise DevOpsAIError("Deployment must have non-empty 'spec.selector.matchLabels'.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment must have non-empty 'spec.selector.matchLabels'.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         template = dep_spec.get("template")
         if not isinstance(template, dict):
-            raise DevOpsAIError("Deployment 'spec.template' must be a dictionary.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment 'spec.template' must be a dictionary.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         template_metadata = template.get("metadata")
         if not isinstance(template_metadata, dict):
-            raise DevOpsAIError("Deployment 'spec.template.metadata' must be a dictionary.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment 'spec.template.metadata' must be a dictionary.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         template_labels = template_metadata.get("labels")
         if not isinstance(template_labels, dict) or len(template_labels) == 0:
-            raise DevOpsAIError("Deployment must have non-empty 'spec.template.metadata.labels'.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment must have non-empty 'spec.template.metadata.labels'.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         # Label consistency & type validation
         for k, v in match_labels.items():
             if not isinstance(k, str) or not isinstance(v, str):
-                raise DevOpsAIError(f"Deployment matchLabels '{k}: {v}' must have string keys and values.", code="GENERATOR_VALIDATION_ERROR")
+                raise DevOpsAIError(
+                    f"Deployment matchLabels '{k}: {v}' must have string keys and values.",
+                    code="GENERATOR_VALIDATION_ERROR",
+                )
             if template_labels.get(k) != v:
                 raise DevOpsAIError(
                     f"Deployment selector mismatch: matchLabels '{k}: {v}' does not match template label '{template_labels.get(k)}'.",
@@ -298,19 +350,30 @@ class K8sManifestGenerator:
 
         for k, v in template_labels.items():
             if not isinstance(k, str) or not isinstance(v, str):
-                raise DevOpsAIError(f"Pod template label '{k}: {v}' must have string keys and values.", code="GENERATOR_VALIDATION_ERROR")
+                raise DevOpsAIError(
+                    f"Pod template label '{k}: {v}' must have string keys and values.",
+                    code="GENERATOR_VALIDATION_ERROR",
+                )
 
         # 5. Service spec and selector compatibility
         svc_spec = service_doc.get("spec")
         if not isinstance(svc_spec, dict):
-            raise DevOpsAIError("Service 'spec' must be a dictionary.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Service 'spec' must be a dictionary.", code="GENERATOR_VALIDATION_ERROR"
+            )
 
         svc_selector = svc_spec.get("selector")
         if not isinstance(svc_selector, dict) or len(svc_selector) == 0:
-            raise DevOpsAIError("Service must have a non-empty 'spec.selector' dictionary.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Service must have a non-empty 'spec.selector' dictionary.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
         for k, v in svc_selector.items():
             if not isinstance(k, str) or not isinstance(v, str):
-                raise DevOpsAIError(f"Service selector '{k}: {v}' must have string keys and values.", code="GENERATOR_VALIDATION_ERROR")
+                raise DevOpsAIError(
+                    f"Service selector '{k}: {v}' must have string keys and values.",
+                    code="GENERATOR_VALIDATION_ERROR",
+                )
             if template_labels.get(k) != v:
                 raise DevOpsAIError(
                     f"Service selector mismatch: '{k}: {v}' does not match Pod template labels.",
@@ -320,11 +383,17 @@ class K8sManifestGenerator:
         # 6. Container specifications
         template_spec = template.get("spec")
         if not isinstance(template_spec, dict):
-            raise DevOpsAIError("Deployment 'spec.template.spec' must be a dictionary.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment 'spec.template.spec' must be a dictionary.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         containers = template_spec.get("containers")
         if not isinstance(containers, list) or len(containers) == 0:
-            raise DevOpsAIError("Deployment must specify a non-empty list of 'containers'.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Deployment must specify a non-empty list of 'containers'.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         container_numeric_ports: List[int] = []
         container_named_ports: List[str] = []
@@ -333,25 +402,43 @@ class K8sManifestGenerator:
 
         for idx, c in enumerate(containers):
             if not isinstance(c, dict):
-                raise DevOpsAIError(f"Container #{idx+1} must be a dictionary mapping.", code="GENERATOR_VALIDATION_ERROR")
+                raise DevOpsAIError(
+                    f"Container #{idx + 1} must be a dictionary mapping.",
+                    code="GENERATOR_VALIDATION_ERROR",
+                )
             c_name = c.get("name")
             c_image = c.get("image")
             if not isinstance(c_name, str) or not c_name.strip():
-                raise DevOpsAIError(f"Container #{idx+1} must have a valid non-empty 'name'.", code="GENERATOR_VALIDATION_ERROR")
+                raise DevOpsAIError(
+                    f"Container #{idx + 1} must have a valid non-empty 'name'.",
+                    code="GENERATOR_VALIDATION_ERROR",
+                )
             if not isinstance(c_image, str) or not c_image.strip():
-                raise DevOpsAIError(f"Container '{c_name}' must have a valid non-empty 'image'.", code="GENERATOR_VALIDATION_ERROR")
+                raise DevOpsAIError(
+                    f"Container '{c_name}' must have a valid non-empty 'image'.",
+                    code="GENERATOR_VALIDATION_ERROR",
+                )
 
             ports = c.get("ports")
             container_local_port_names = set()
             if ports is not None:
                 if not isinstance(ports, list):
-                    raise DevOpsAIError(f"Container '{c_name}' ports must be a list.", code="GENERATOR_VALIDATION_ERROR")
+                    raise DevOpsAIError(
+                        f"Container '{c_name}' ports must be a list.",
+                        code="GENERATOR_VALIDATION_ERROR",
+                    )
                 for p in ports:
                     if not isinstance(p, dict):
-                        raise DevOpsAIError(f"Container '{c_name}' port entry must be a dictionary.", code="GENERATOR_VALIDATION_ERROR")
+                        raise DevOpsAIError(
+                            f"Container '{c_name}' port entry must be a dictionary.",
+                            code="GENERATOR_VALIDATION_ERROR",
+                        )
                     cp = p.get("containerPort")
                     if cp is None:
-                        raise DevOpsAIError(f"Container '{c_name}' port entry missing 'containerPort'.", code="GENERATOR_VALIDATION_ERROR")
+                        raise DevOpsAIError(
+                            f"Container '{c_name}' port entry missing 'containerPort'.",
+                            code="GENERATOR_VALIDATION_ERROR",
+                        )
                     if type(cp) is not int or isinstance(cp, bool) or cp < 1 or cp > 65535:
                         raise DevOpsAIError(
                             f"Container '{c_name}' containerPort must be a strict integer between 1 and 65535 (booleans rejected), got {cp}.",
@@ -361,7 +448,9 @@ class K8sManifestGenerator:
 
                     p_name = p.get("name")
                     if p_name is not None:
-                        if not isinstance(p_name, str) or not re.match(rfc6335_port_name_regex, p_name):
+                        if not isinstance(p_name, str) or not re.match(
+                            rfc6335_port_name_regex, p_name
+                        ):
                             raise DevOpsAIError(
                                 f"Container '{c_name}' port name '{p_name}' is invalid. Must be RFC 6335 compatible (1-15 lowercase alphanumeric/hyphen).",
                                 code="GENERATOR_VALIDATION_ERROR",
@@ -389,16 +478,28 @@ class K8sManifestGenerator:
         # 7. Service ports validation
         svc_ports = svc_spec.get("ports")
         if not isinstance(svc_ports, list) or len(svc_ports) == 0:
-            raise DevOpsAIError("Service must specify a non-empty 'spec.ports' list.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                "Service must specify a non-empty 'spec.ports' list.",
+                code="GENERATOR_VALIDATION_ERROR",
+            )
 
         for idx, sp in enumerate(svc_ports):
             if not isinstance(sp, dict):
-                raise DevOpsAIError(f"Service port entry #{idx+1} must be a dictionary.", code="GENERATOR_VALIDATION_ERROR")
+                raise DevOpsAIError(
+                    f"Service port entry #{idx + 1} must be a dictionary.",
+                    code="GENERATOR_VALIDATION_ERROR",
+                )
 
             s_port = sp.get("port")
-            if s_port is None or type(s_port) is not int or isinstance(s_port, bool) or s_port < 1 or s_port > 65535:
+            if (
+                s_port is None
+                or type(s_port) is not int
+                or isinstance(s_port, bool)
+                or s_port < 1
+                or s_port > 65535
+            ):
                 raise DevOpsAIError(
-                    f"Service port #{idx+1} 'port' must be a strict integer between 1 and 65535 (booleans rejected), got {s_port}.",
+                    f"Service port #{idx + 1} 'port' must be a strict integer between 1 and 65535 (booleans rejected), got {s_port}.",
                     code="GENERATOR_VALIDATION_ERROR",
                 )
 
@@ -435,7 +536,7 @@ class K8sManifestGenerator:
             proto = sp.get("protocol")
             if proto is not None and proto not in ("TCP", "UDP", "SCTP"):
                 raise DevOpsAIError(
-                    f"Service port #{idx+1} protocol '{proto}' is invalid. Supported: TCP, UDP, SCTP.",
+                    f"Service port #{idx + 1} protocol '{proto}' is invalid. Supported: TCP, UDP, SCTP.",
                     code="GENERATOR_VALIDATION_ERROR",
                 )
 
@@ -456,7 +557,9 @@ class K8sManifestGenerator:
         # 9. Service Type & NodePort validation
         svc_type = svc_spec.get("type", "ClusterIP")
         if svc_type not in ["ClusterIP", "NodePort", "LoadBalancer"]:
-            raise DevOpsAIError(f"Unsupported Service type '{svc_type}'.", code="GENERATOR_VALIDATION_ERROR")
+            raise DevOpsAIError(
+                f"Unsupported Service type '{svc_type}'.", code="GENERATOR_VALIDATION_ERROR"
+            )
         if svc_type != expected_service_type:
             raise DevOpsAIError(
                 f"Generated Service type '{svc_type}' does not match requested service type '{expected_service_type}'.",
@@ -467,7 +570,12 @@ class K8sManifestGenerator:
             for sp in svc_ports:
                 node_port = sp.get("nodePort")
                 if node_port is not None:
-                    if type(node_port) is not int or isinstance(node_port, bool) or node_port < 30000 or node_port > 32767:
+                    if (
+                        type(node_port) is not int
+                        or isinstance(node_port, bool)
+                        or node_port < 30000
+                        or node_port > 32767
+                    ):
                         raise DevOpsAIError(
                             f"Explicit nodePort {node_port} is outside standard Kubernetes default range 30000-32767 (booleans rejected).",
                             code="GENERATOR_VALIDATION_ERROR",
@@ -485,14 +593,22 @@ class K8sManifestGenerator:
         for c in containers:
             resources = c.get("resources")
             if not isinstance(resources, dict) or not isinstance(resources.get("limits"), dict):
-                warnings.append(f"Container '{c.get('name', 'app')}' has no resource limits specified.")
+                warnings.append(
+                    f"Container '{c.get('name', 'app')}' has no resource limits specified."
+                )
             sec_ctx = c.get("securityContext")
             if not isinstance(sec_ctx, dict):
-                warnings.append(f"Container '{c.get('name', 'app')}' has no securityContext specified.")
+                warnings.append(
+                    f"Container '{c.get('name', 'app')}' has no securityContext specified."
+                )
             if not c.get("livenessProbe"):
-                warnings.append(f"Container '{c.get('name', 'app')}' has no livenessProbe specified.")
+                warnings.append(
+                    f"Container '{c.get('name', 'app')}' has no livenessProbe specified."
+                )
             if not c.get("readinessProbe"):
-                warnings.append(f"Container '{c.get('name', 'app')}' has no readinessProbe specified.")
+                warnings.append(
+                    f"Container '{c.get('name', 'app')}' has no readinessProbe specified."
+                )
 
         for w in warnings:
             logger.warning(f"Kubernetes validation warning: {w}")

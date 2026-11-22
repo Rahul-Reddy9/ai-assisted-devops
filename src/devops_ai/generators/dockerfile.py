@@ -35,6 +35,7 @@ Security & Quality Best Practices:
 @dataclass
 class DockerfileValidationResult:
     """Result of Dockerfile static heuristic validation."""
+
     is_valid: bool
     content: str
     warnings: List[str] = field(default_factory=list)
@@ -114,12 +115,16 @@ class DockerfileGenerator:
     @staticmethod
     def _clean_markdown_fences(text: str) -> str:
         cleaned = text.strip()
-        cleaned = re.sub(r"^```(?:dockerfile|docker|sh|bash)?\r?\n", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r"^```(?:dockerfile|docker|sh|bash)?\r?\n", "", cleaned, flags=re.IGNORECASE
+        )
         cleaned = re.sub(r"\r?\n```$", "", cleaned)
         return cleaned.strip()
 
     @staticmethod
-    def _validate_dockerfile(content: str, requested_port: Optional[int] = None) -> DockerfileValidationResult:
+    def _validate_dockerfile(
+        content: str, requested_port: Optional[int] = None
+    ) -> DockerfileValidationResult:
         """Heuristic validation of Dockerfile syntax and security patterns.
 
         Note: This is a static regex heuristic check that catches common errors,
@@ -135,7 +140,11 @@ class DockerfileGenerator:
         uncommented_content = "\n".join(lines_without_comments)
 
         # 1. Fatal Syntax Check: Must contain valid FROM instruction
-        if not re.search(r"^\s*FROM\s+(?:--platform=\S+\s+)?\S+", uncommented_content, re.MULTILINE | re.IGNORECASE):
+        if not re.search(
+            r"^\s*FROM\s+(?:--platform=\S+\s+)?\S+",
+            uncommented_content,
+            re.MULTILINE | re.IGNORECASE,
+        ):
             raise DevOpsAIError(
                 "Generated Dockerfile is missing required 'FROM' instruction.",
                 code="GENERATOR_VALIDATION_ERROR",
@@ -143,8 +152,14 @@ class DockerfileGenerator:
 
         # 2. Fatal Security Pattern Check: Disallow destructive commands
         fatal_patterns = [
-            (r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(?:/\s*$|/\*|/[^a-zA-Z0-9])", "Dangerous recursive root deletion 'rm -rf /' detected."),
-            (r"\bchmod\s+(?:-[a-zA-Z]*\s+)?777\s+/", "Overly permissive root permission change 'chmod 777 /' detected."),
+            (
+                r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(?:/\s*$|/\*|/[^a-zA-Z0-9])",
+                "Dangerous recursive root deletion 'rm -rf /' detected.",
+            ),
+            (
+                r"\bchmod\s+(?:-[a-zA-Z]*\s+)?777\s+/",
+                "Overly permissive root permission change 'chmod 777 /' detected.",
+            ),
         ]
         for pattern, msg in fatal_patterns:
             if re.search(pattern, uncommented_content, re.MULTILINE):
@@ -157,29 +172,49 @@ class DockerfileGenerator:
         warnings: List[str] = []
 
         # Multi-stage aware USER validation: evaluate USER specifically in the final build stage
-        stages = re.split(r"(?=^\s*FROM\s+)", uncommented_content, flags=re.MULTILINE | re.IGNORECASE)
+        stages = re.split(
+            r"(?=^\s*FROM\s+)", uncommented_content, flags=re.MULTILINE | re.IGNORECASE
+        )
         stages = [s for s in stages if re.match(r"^\s*FROM\s+", s, re.IGNORECASE)]
         final_stage = stages[-1] if stages else uncommented_content
 
         user_matches = re.findall(r"^\s*USER\s+(\S+)", final_stage, re.MULTILINE | re.IGNORECASE)
         if not user_matches:
-            warnings.append("No 'USER' instruction found in final build stage; container will run as root.")
+            warnings.append(
+                "No 'USER' instruction found in final build stage; container will run as root."
+            )
         else:
             last_user = user_matches[-1]
             if re.match(r"^(?:root|0+|0+:0+|root:root|0+:root|root:0+)$", last_user, re.IGNORECASE):
-                warnings.append(f"Final build stage explicitly configured with root user 'USER {last_user}'; recommend running as non-root.")
+                warnings.append(
+                    f"Final build stage explicitly configured with root user 'USER {last_user}'; recommend running as non-root."
+                )
 
-        if re.search(r"^\s*FROM\s+(?:--platform=\S+\s+)?(?:[\w./-]+):latest\b", uncommented_content, re.MULTILINE | re.IGNORECASE):
-            warnings.append("Base image uses unpinned ':latest' tag; pin to a specific version or digest.")
+        if re.search(
+            r"^\s*FROM\s+(?:--platform=\S+\s+)?(?:[\w./-]+):latest\b",
+            uncommented_content,
+            re.MULTILINE | re.IGNORECASE,
+        ):
+            warnings.append(
+                "Base image uses unpinned ':latest' tag; pin to a specific version or digest."
+            )
 
         if re.search(r"\bsudo\b", uncommented_content, re.IGNORECASE):
             warnings.append("Reference to 'sudo' detected; avoid sudo in container environments.")
 
         if re.search(r"\b(curl|wget)\b.*\|\s*(ba)?sh", uncommented_content, re.IGNORECASE):
-            warnings.append("Piping curl/wget directly to shell detected; verify remote script integrity.")
+            warnings.append(
+                "Piping curl/wget directly to shell detected; verify remote script integrity."
+            )
 
-        if requested_port and not re.search(rf"^\s*EXPOSE\s+.*?\b{requested_port}\b", uncommented_content, re.MULTILINE | re.IGNORECASE):
-            warnings.append(f"Requested port {requested_port} does not appear in an EXPOSE instruction.")
+        if requested_port and not re.search(
+            rf"^\s*EXPOSE\s+.*?\b{requested_port}\b",
+            uncommented_content,
+            re.MULTILINE | re.IGNORECASE,
+        ):
+            warnings.append(
+                f"Requested port {requested_port} does not appear in an EXPOSE instruction."
+            )
 
         for w in warnings:
             logger.warning(f"Dockerfile validation warning: {w}")

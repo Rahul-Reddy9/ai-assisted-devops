@@ -116,7 +116,7 @@ class OllamaProvider(BaseLLMProvider):
 
     def check_health(self, verify_remote: bool = False) -> bool:
         """Check provider health and readiness.
-        
+
         verify_remote=False: Validates host URL syntax and model configuration locally.
         verify_remote=True: Makes live HTTP call to /api/tags and verifies daemon reachability.
         """

@@ -51,7 +51,9 @@ class GeminiProvider(BaseLLMProvider):
             )
         raw = settings.google_api_key.get_secret_value()
         if not raw or not raw.strip():
-            raise ConfigurationError("GOOGLE_API_KEY is empty. Provide a valid Google Gemini API key.")
+            raise ConfigurationError(
+                "GOOGLE_API_KEY is empty. Provide a valid Google Gemini API key."
+            )
         return raw.strip()
 
     def _sanitize_message(self, message: str) -> str:
@@ -110,11 +112,13 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as e:
             sanitized_err = self._sanitize_message(str(e))
             logger.error(f"Gemini generation failure: {sanitized_err}")
-            raise LLMProviderError(f"Gemini API call failed: {sanitized_err}", provider="gemini") from None
+            raise LLMProviderError(
+                f"Gemini API call failed: {sanitized_err}", provider="gemini"
+            ) from None
 
     def check_health(self, verify_remote: bool = False) -> bool:
         """Check provider health.
-        
+
         If verify_remote is False: validates local API key configuration presence.
         If verify_remote is True: performs live remote connectivity check against Gemini API.
         """
@@ -126,6 +130,7 @@ class GeminiProvider(BaseLLMProvider):
         try:
             from google import genai
             from google.genai import types
+
             raw_key = self._get_raw_key()
             check_timeout_ms = min(int(self._timeout * 1000), 5000)
             client = genai.Client(

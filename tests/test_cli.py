@@ -46,7 +46,10 @@ def test_provider_check_invalid_timeout():
 
 def test_provider_check_gemini_local_only():
     with patch("devops_ai.cli.get_settings", return_value=Settings(google_api_key="valid-key")):
-        with patch("devops_ai.llm.gemini_provider.get_settings", return_value=Settings(google_api_key="valid-key")):
+        with patch(
+            "devops_ai.llm.gemini_provider.get_settings",
+            return_value=Settings(google_api_key="valid-key"),
+        ):
             result = runner.invoke(app, ["provider", "check", "--provider", "gemini"])
             assert result.exit_code == 0
             assert "Gemini credentials configured" in result.stdout
@@ -55,18 +58,32 @@ def test_provider_check_gemini_local_only():
 
 def test_provider_check_gemini_verify_remote_success():
     with patch("devops_ai.cli.get_settings", return_value=Settings(google_api_key="valid-key")):
-        with patch("devops_ai.llm.gemini_provider.get_settings", return_value=Settings(google_api_key="valid-key")):
-            with patch("devops_ai.llm.gemini_provider.GeminiProvider.check_health", return_value=True):
-                result = runner.invoke(app, ["provider", "check", "--provider", "gemini", "--verify-remote"])
+        with patch(
+            "devops_ai.llm.gemini_provider.get_settings",
+            return_value=Settings(google_api_key="valid-key"),
+        ):
+            with patch(
+                "devops_ai.llm.gemini_provider.GeminiProvider.check_health", return_value=True
+            ):
+                result = runner.invoke(
+                    app, ["provider", "check", "--provider", "gemini", "--verify-remote"]
+                )
                 assert result.exit_code == 0
                 assert "Gemini is healthy and connected" in result.stdout
 
 
 def test_provider_check_gemini_verify_remote_failure():
     with patch("devops_ai.cli.get_settings", return_value=Settings(google_api_key="valid-key")):
-        with patch("devops_ai.llm.gemini_provider.get_settings", return_value=Settings(google_api_key="valid-key")):
-            with patch("devops_ai.llm.gemini_provider.GeminiProvider.check_health", return_value=False):
-                result = runner.invoke(app, ["provider", "check", "--provider", "gemini", "--verify-remote"])
+        with patch(
+            "devops_ai.llm.gemini_provider.get_settings",
+            return_value=Settings(google_api_key="valid-key"),
+        ):
+            with patch(
+                "devops_ai.llm.gemini_provider.GeminiProvider.check_health", return_value=False
+            ):
+                result = runner.invoke(
+                    app, ["provider", "check", "--provider", "gemini", "--verify-remote"]
+                )
                 assert result.exit_code == 1
                 assert "Gemini check failed" in result.stdout
 
@@ -80,7 +97,9 @@ def test_provider_check_ollama_reachable():
 
 def test_provider_check_ollama_unreachable():
     with patch("devops_ai.llm.ollama_provider.OllamaProvider.check_health", return_value=False):
-        result = runner.invoke(app, ["provider", "check", "--provider", "ollama", "--verify-remote"])
+        result = runner.invoke(
+            app, ["provider", "check", "--provider", "ollama", "--verify-remote"]
+        )
         assert result.exit_code == 1
         assert "is unreachable" in result.stdout
 
@@ -128,13 +147,17 @@ def test_generate_dockerfile_cli_rich_escaping():
 
 
 def test_generate_k8s_cli_invalid_service_type():
-    result = runner.invoke(app, ["generate", "k8s", "myapp", "--image", "myapp:1.0", "--service-type", "InvalidType"])
+    result = runner.invoke(
+        app, ["generate", "k8s", "myapp", "--image", "myapp:1.0", "--service-type", "InvalidType"]
+    )
     assert result.exit_code == 2
     assert "Unsupported service type" in result.stdout
 
 
 def test_generate_k8s_cli_invalid_replicas():
-    result = runner.invoke(app, ["generate", "k8s", "myapp", "--image", "myapp:1.0", "--replicas", "0"])
+    result = runner.invoke(
+        app, ["generate", "k8s", "myapp", "--image", "myapp:1.0", "--replicas", "0"]
+    )
     assert result.exit_code == 2
     assert "Replicas must be an integer >= 1" in result.stdout
 
@@ -149,13 +172,18 @@ def test_generate_k8s_cli_success():
         model="llama3.2:1b",
     )
     with patch("devops_ai.cli.K8sManifestGenerator.generate", return_value=mock_res):
-        result = runner.invoke(app, ["generate", "k8s", "myapp", "--image", "myapp:1.0", "--port", "8080"])
+        result = runner.invoke(
+            app, ["generate", "k8s", "myapp", "--image", "myapp:1.0", "--port", "8080"]
+        )
         assert result.exit_code == 0
         assert "Generated Kubernetes Manifests" in result.stdout
 
 
 def test_cli_error_sanitization():
-    with patch("devops_ai.cli.DockerfileGenerator.generate", side_effect=DevOpsAIError("API error with AIzaSyFakeKey123456789012345678901234 in URL")):
+    with patch(
+        "devops_ai.cli.DockerfileGenerator.generate",
+        side_effect=DevOpsAIError("API error with AIzaSyFakeKey123456789012345678901234 in URL"),
+    ):
         result = runner.invoke(app, ["generate", "dockerfile", "python"])
         assert result.exit_code == 1
         assert "AIzaSyFakeKey" not in result.stdout
@@ -163,7 +191,10 @@ def test_cli_error_sanitization():
 
 
 def test_cli_unexpected_exception_sanitization():
-    with patch("devops_ai.cli.DockerfileGenerator.generate", side_effect=RuntimeError("Fatal error with key AIzaSyFakeKey123456789012345678901234")):
+    with patch(
+        "devops_ai.cli.DockerfileGenerator.generate",
+        side_effect=RuntimeError("Fatal error with key AIzaSyFakeKey123456789012345678901234"),
+    ):
         result = runner.invoke(app, ["generate", "dockerfile", "python"])
         assert result.exit_code == 1
         assert "AIzaSyFakeKey" not in result.stdout

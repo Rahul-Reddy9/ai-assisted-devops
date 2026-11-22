@@ -61,7 +61,9 @@ spec:
 def test_valid_manifest_passes_all_checks(mock_provider):
     mock_provider.generate.return_value = VALID_K8S_YAML
     generator = K8sManifestGenerator(provider=mock_provider)
-    result = generator.generate(app_name="myapp", image="myapp:1.0", port=8080, replicas=2, namespace="default")
+    result = generator.generate(
+        app_name="myapp", image="myapp:1.0", port=8080, replicas=2, namespace="default"
+    )
     assert result.is_valid is True
     assert len(result.documents) == 2
     assert result.provider == "ollama"
@@ -133,7 +135,10 @@ def test_require_exactly_one_deployment_and_service(mock_provider):
     assert "Expected exactly one Service" in str(exc_info.value)
 
     # Extra ConfigMap
-    extra_yaml = VALID_K8S_YAML + "\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\ndata:\n  k: v"
+    extra_yaml = (
+        VALID_K8S_YAML
+        + "\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\ndata:\n  k: v"
+    )
     mock_provider.generate.return_value = extra_yaml
     with pytest.raises(DevOpsAIError) as exc_info2:
         generator.generate(app_name="myapp", image="myapp:1.0", port=8080, replicas=2)
@@ -272,7 +277,9 @@ def test_node_port_optional_for_nodeport_service(mock_provider):
     nodeport_yaml = VALID_K8S_YAML.replace("type: ClusterIP", "type: NodePort")
     mock_provider.generate.return_value = nodeport_yaml
     generator = K8sManifestGenerator(provider=mock_provider)
-    result = generator.generate(app_name="myapp", image="myapp:1.0", port=8080, replicas=2, service_type="NodePort")
+    result = generator.generate(
+        app_name="myapp", image="myapp:1.0", port=8080, replicas=2, service_type="NodePort"
+    )
     assert result.is_valid is True
 
 
@@ -316,17 +323,23 @@ spec:
     mock_provider.generate.return_value = bad_nodeport
     generator = K8sManifestGenerator(provider=mock_provider)
     with pytest.raises(DevOpsAIError) as exc_info:
-        generator.generate(app_name="myapp", image="myapp:1.0", port=8080, replicas=2, service_type="NodePort")
+        generator.generate(
+            app_name="myapp", image="myapp:1.0", port=8080, replicas=2, service_type="NodePort"
+        )
     assert "outside standard Kubernetes default range 30000-32767" in str(exc_info.value)
 
 
 def test_node_port_rejected_for_cluster_ip(mock_provider):
     # NodePort specified on ClusterIP fails
-    bad_clusterip = VALID_K8S_YAML.replace("targetPort: 8080", "targetPort: 8080\n    nodePort: 31000")
+    bad_clusterip = VALID_K8S_YAML.replace(
+        "targetPort: 8080", "targetPort: 8080\n    nodePort: 31000"
+    )
     mock_provider.generate.return_value = bad_clusterip
     generator = K8sManifestGenerator(provider=mock_provider)
     with pytest.raises(DevOpsAIError) as exc_info:
-        generator.generate(app_name="myapp", image="myapp:1.0", port=8080, replicas=2, service_type="ClusterIP")
+        generator.generate(
+            app_name="myapp", image="myapp:1.0", port=8080, replicas=2, service_type="ClusterIP"
+        )
     assert "must not specify nodePort" in str(exc_info.value)
 
 
@@ -335,7 +348,9 @@ def test_namespace_validation(mock_provider):
     mock_provider.generate.return_value = mismatch_ns
     generator = K8sManifestGenerator(provider=mock_provider)
     with pytest.raises(DevOpsAIError) as exc_info:
-        generator.generate(app_name="myapp", image="myapp:1.0", port=8080, replicas=2, namespace="default")
+        generator.generate(
+            app_name="myapp", image="myapp:1.0", port=8080, replicas=2, namespace="default"
+        )
     assert "Namespace mismatch" in str(exc_info.value)
 
 
@@ -346,7 +361,14 @@ def test_k8s_refuse_overwrite_without_force(mock_provider, tmp_path: Path):
     mock_provider.generate.return_value = VALID_K8S_YAML
     generator = K8sManifestGenerator(provider=mock_provider)
     with pytest.raises(DevOpsAIError) as exc_info:
-        generator.generate(app_name="myapp", image="myapp:1.0", port=8080, replicas=2, output_path=target, force=False)
+        generator.generate(
+            app_name="myapp",
+            image="myapp:1.0",
+            port=8080,
+            replicas=2,
+            output_path=target,
+            force=False,
+        )
     assert exc_info.value.code == "FILE_ALREADY_EXISTS"
     assert target.read_text(encoding="utf-8") == "EXISTING MANIFEST"
 
@@ -357,6 +379,8 @@ def test_k8s_atomic_overwrite_with_force(mock_provider, tmp_path: Path):
 
     mock_provider.generate.return_value = VALID_K8S_YAML
     generator = K8sManifestGenerator(provider=mock_provider)
-    result = generator.generate(app_name="myapp", image="myapp:1.0", port=8080, replicas=2, output_path=target, force=True)
+    result = generator.generate(
+        app_name="myapp", image="myapp:1.0", port=8080, replicas=2, output_path=target, force=True
+    )
     assert result.is_valid is True
     assert "kind: Deployment" in target.read_text(encoding="utf-8")

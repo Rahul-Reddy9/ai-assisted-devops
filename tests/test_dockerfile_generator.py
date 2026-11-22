@@ -99,7 +99,9 @@ CMD ["/app"]
 """
     mock_provider.generate.return_value = content_unsafe
     result = generator.generate(language="golang", port=8080)
-    assert any("no 'user' instruction found in final build stage" in w.lower() for w in result.warnings)
+    assert any(
+        "no 'user' instruction found in final build stage" in w.lower() for w in result.warnings
+    )
 
 
 def test_dockerfile_comment_stripping_ignores_fake_user(mock_provider):
@@ -204,4 +206,7 @@ def test_dockerfile_port_expose_warning(mock_provider):
     mock_provider.generate.return_value = content
     generator = DockerfileGenerator(provider=mock_provider)
     result = generator.generate(language="python", port=8000)
-    assert any("requested port 8000 does not appear in an expose instruction" in w.lower() for w in result.warnings)
+    assert any(
+        "requested port 8000 does not appear in an expose instruction" in w.lower()
+        for w in result.warnings
+    )

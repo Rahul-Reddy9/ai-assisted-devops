@@ -83,7 +83,9 @@ def test_ollama_get_installed_models():
     provider = OllamaProvider(model="llama3.2:1b", host="http://localhost:11434")
     mock_resp = MagicMock()
     mock_resp.status = 200
-    mock_resp.read.return_value = b'{"models": [{"name": "llama3.2:1b"}, {"name": "mistral:latest"}]}'
+    mock_resp.read.return_value = (
+        b'{"models": [{"name": "llama3.2:1b"}, {"name": "mistral:latest"}]}'
+    )
     mock_resp.__enter__.return_value = mock_resp
 
     with patch("urllib.request.urlopen", return_value=mock_resp):
@@ -109,7 +111,9 @@ def test_ollama_provider_sanitizes_exceptions(monkeypatch):
     mock_ollama = MagicMock()
     mock_client_instance = MagicMock()
     # Simulate an error message containing an API key
-    mock_client_instance.chat.side_effect = Exception("Failed connecting to AIzaSyFakeKey123456789012345678901234")
+    mock_client_instance.chat.side_effect = Exception(
+        "Failed connecting to AIzaSyFakeKey123456789012345678901234"
+    )
     mock_ollama.Client.return_value = mock_client_instance
 
     with patch.dict("sys.modules", {"ollama": mock_ollama}):
@@ -125,7 +129,10 @@ def test_gemini_provider_is_configured():
     # Default settings has google_api_key = None
     assert provider.is_configured() is False
 
-    with patch("devops_ai.llm.gemini_provider.get_settings", return_value=Settings(google_api_key="valid-key")):
+    with patch(
+        "devops_ai.llm.gemini_provider.get_settings",
+        return_value=Settings(google_api_key="valid-key"),
+    ):
         configured_provider = GeminiProvider()
         assert configured_provider.is_configured() is True
 
@@ -149,8 +156,14 @@ def test_gemini_timeout_conversion_to_milliseconds(monkeypatch):
     mock_client_instance.models.generate_content.return_value = mock_response
     mock_genai.Client.return_value = mock_client_instance
 
-    with patch("devops_ai.llm.gemini_provider.get_settings", return_value=Settings(google_api_key="valid-key", llm_timeout_seconds=60.0)):
-        with patch.dict("sys.modules", {"google": mock_google, "google.genai": mock_genai, "google.genai.types": mock_types}):
+    with patch(
+        "devops_ai.llm.gemini_provider.get_settings",
+        return_value=Settings(google_api_key="valid-key", llm_timeout_seconds=60.0),
+    ):
+        with patch.dict(
+            "sys.modules",
+            {"google": mock_google, "google.genai": mock_genai, "google.genai.types": mock_types},
+        ):
             provider = GeminiProvider(timeout=60.0)
             result = provider.generate("Hello")
             assert result == "Generated content"
@@ -159,7 +172,10 @@ def test_gemini_timeout_conversion_to_milliseconds(monkeypatch):
 
 
 def test_gemini_check_health_local_vs_remote():
-    with patch("devops_ai.llm.gemini_provider.get_settings", return_value=Settings(google_api_key="valid-key")):
+    with patch(
+        "devops_ai.llm.gemini_provider.get_settings",
+        return_value=Settings(google_api_key="valid-key"),
+    ):
         provider = GeminiProvider()
         # Local check: verify_remote=False -> returns True without calling client
         assert provider.check_health(verify_remote=False) is True
@@ -171,7 +187,10 @@ def test_gemini_check_health_local_vs_remote():
         mock_google.genai = mock_genai
         mock_client = MagicMock()
         mock_genai.Client.return_value = mock_client
-        with patch.dict("sys.modules", {"google": mock_google, "google.genai": mock_genai, "google.genai.types": mock_types}):
+        with patch.dict(
+            "sys.modules",
+            {"google": mock_google, "google.genai": mock_genai, "google.genai.types": mock_types},
+        ):
             assert provider.check_health(verify_remote=True) is True
             mock_client.models.get.assert_called_once_with(model=provider.model_name)
 
@@ -223,7 +242,9 @@ def test_generate_with_fallback_triggers_alternate_on_primary_failure():
         return fallback_mock
 
     with patch.object(LLMRouter, "get_provider", side_effect=mock_get_provider):
-        res = LLMRouter.generate_with_fallback("Test prompt", provider_name="ollama", allow_fallback=True)
+        res = LLMRouter.generate_with_fallback(
+            "Test prompt", provider_name="ollama", allow_fallback=True
+        )
         assert res.content == "Fallback text"
         assert res.provider == "gemini"
         assert res.fallback_used is True
@@ -245,7 +266,9 @@ def test_generate_with_fallback_handles_unexpected_primary_exception():
         return fallback_mock
 
     with patch.object(LLMRouter, "get_provider", side_effect=mock_get_provider):
-        res = LLMRouter.generate_with_fallback("Test prompt", provider_name="ollama", allow_fallback=True)
+        res = LLMRouter.generate_with_fallback(
+            "Test prompt", provider_name="ollama", allow_fallback=True
+        )
         assert res.content == "Recovered text"
         assert res.fallback_used is True
 
@@ -257,7 +280,9 @@ def test_generate_with_fallback_fails_both_providers():
 
     fallback_mock = MagicMock(spec=BaseLLMProvider)
     fallback_mock.provider_name = "gemini"
-    fallback_mock.generate.side_effect = LLMProviderError("Gemini quota exceeded", provider="gemini")
+    fallback_mock.generate.side_effect = LLMProviderError(
+        "Gemini quota exceeded", provider="gemini"
+    )
 
     def mock_get_provider(provider_name, **kwargs):
         if provider_name == "ollama":
@@ -266,7 +291,9 @@ def test_generate_with_fallback_fails_both_providers():
 
     with patch.object(LLMRouter, "get_provider", side_effect=mock_get_provider):
         with pytest.raises(LLMProviderError) as exc_info:
-            LLMRouter.generate_with_fallback("Test prompt", provider_name="ollama", allow_fallback=True)
+            LLMRouter.generate_with_fallback(
+                "Test prompt", provider_name="ollama", allow_fallback=True
+            )
         assert "Primary provider 'ollama' failed" in str(exc_info.value)
         assert "fallback provider 'gemini' also failed" in str(exc_info.value)
 
@@ -274,7 +301,9 @@ def test_generate_with_fallback_fails_both_providers():
 def test_fallback_error_sanitization_masks_api_keys():
     primary_mock = MagicMock(spec=BaseLLMProvider)
     primary_mock.provider_name = "gemini"
-    primary_mock.generate.side_effect = Exception("API error with key AIzaSyFakeKey123456789012345678901234 in URL")
+    primary_mock.generate.side_effect = Exception(
+        "API error with key AIzaSyFakeKey123456789012345678901234 in URL"
+    )
 
     with patch.object(LLMRouter, "get_provider", return_value=primary_mock):
         with pytest.raises(LLMProviderError) as exc_info:
