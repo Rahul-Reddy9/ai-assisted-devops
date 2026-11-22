@@ -416,7 +416,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "devops_ai_system_cpu_percent",
+          "expr": "devops_ai_system_cpu_usage_percent",
           "refId": "A"
         }
       ],
@@ -472,7 +472,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "devops_ai_system_memory_bytes",
+          "expr": "devops_ai_system_memory_usage_bytes",
           "refId": "A"
         }
       ],
