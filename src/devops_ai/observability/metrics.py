@@ -190,6 +190,16 @@ def record_log_anomaly(detection_type: str) -> None:
     LOG_ANOMALIES_COUNTER.labels(detection_type=safe_type).inc()
 
 
+def record_docker_status(is_available: bool) -> None:
+    """Update Docker daemon availability gauge (1.0 = available, 0.0 = unavailable)."""
+    DOCKER_AVAILABLE_GAUGE.set(1.0 if is_available else 0.0)
+
+
+def record_k8s_status(is_available: bool) -> None:
+    """Update Kubernetes cluster availability gauge (1.0 = available, 0.0 = unavailable)."""
+    K8S_AVAILABLE_GAUGE.set(1.0 if is_available else 0.0)
+
+
 def get_prometheus_exposition(force_refresh: bool = False) -> bytes:
     """Retrieve Prometheus metrics payload in standard exposition format."""
     return _METRICS_CACHE.get_exposition(force_refresh=force_refresh)

@@ -2,7 +2,17 @@
 # Licensed under the Apache License, Version 2.0
 """Observability, monitoring, and telemetry subsystem for DevOps AI."""
 
+from devops_ai.observability.docker_monitor import (
+    ContainerInfo,
+    DockerMonitor,
+    DockerStatus,
+)
 from devops_ai.observability.health import evaluate_liveness, evaluate_readiness
+from devops_ai.observability.k8s_monitor import (
+    K8sClusterStatus,
+    K8sMonitor,
+    K8sWorkloadInfo,
+)
 from devops_ai.observability.log_analyzer import (
     AnomalyDetectionResult,
     BurstDetectionResult,
@@ -11,7 +21,9 @@ from devops_ai.observability.log_analyzer import (
 from devops_ai.observability.log_parser import LogEntry, LogParser
 from devops_ai.observability.metrics import (
     get_prometheus_exposition,
+    record_docker_status,
     record_generation_request,
+    record_k8s_status,
     record_log_anomaly,
     record_provider_health,
     record_validation_error,
@@ -34,7 +46,15 @@ __all__ = [
     "record_validation_error",
     "record_provider_health",
     "record_log_anomaly",
+    "record_docker_status",
+    "record_k8s_status",
     "ProviderMonitor",
     "ProviderTelemetry",
     "MetricsServer",
+    "ContainerInfo",
+    "DockerStatus",
+    "DockerMonitor",
+    "K8sWorkloadInfo",
+    "K8sClusterStatus",
+    "K8sMonitor",
 ]
