@@ -44,6 +44,18 @@ class Settings(BaseSettings):
         default="gemini-2.5-flash", description="Configurable Gemini model identifier"
     )
 
+    # Observability & Metrics Configuration
+    log_format: Literal["rich", "json"] = "rich"
+    metrics_host: str = Field(
+        default="127.0.0.1", description="Prometheus metrics server bind address"
+    )
+    metrics_port: int = Field(
+        default=9090, ge=1024, le=65535, description="Prometheus metrics server port"
+    )
+    health_check_timeout_seconds: float = Field(
+        default=5.0, ge=0.5, le=60.0, description="Health probe timeout in seconds"
+    )
+
     # Observability defaults (Phase 1 preserved)
     anomaly_contamination: float = Field(default=0.1, ge=0.01, le=0.5)
     burst_threshold: int = Field(default=3, ge=1)
