@@ -119,6 +119,7 @@ class K8sMonitor:
             core_api = client.CoreV1Api(api_client=self._api_client)
 
             workloads: List[K8sWorkloadInfo] = []
+            query_errors: List[str] = []
 
             # 1. Fetch Deployments
             try:
@@ -147,6 +148,7 @@ class K8sMonitor:
                         )
                     )
             except Exception as dep_err:
+                query_errors.append(str(dep_err))
                 logger.debug(f"Could not list deployments: {dep_err}")
 
             # 2. Fetch Pods
@@ -175,6 +177,7 @@ class K8sMonitor:
                         )
                     )
             except Exception as pod_err:
+                query_errors.append(str(pod_err))
                 logger.debug(f"Could not list pods: {pod_err}")
 
             # 3. Fetch Services
@@ -204,7 +207,17 @@ class K8sMonitor:
                         )
                     )
             except Exception as svc_err:
+                query_errors.append(str(svc_err))
                 logger.debug(f"Could not list services: {svc_err}")
+
+            if len(query_errors) == 3:
+                safe_err = _scrub_secrets(query_errors[0])
+                record_k8s_status(False)
+                return K8sClusterStatus(
+                    is_available=False,
+                    cluster_host=cluster_host,
+                    error=f"Kubernetes cluster queries failed: {safe_err}",
+                )
 
             record_k8s_status(True)
             return K8sClusterStatus(
