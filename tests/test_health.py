@@ -3,6 +3,7 @@
 """Unit tests for application health endpoints and HTTP server."""
 
 import json
+import time
 from unittest.mock import patch
 import urllib.request
 from devops_ai.observability.health import evaluate_liveness, evaluate_readiness
@@ -36,31 +37,35 @@ def test_evaluate_readiness_filesystem_failure():
 
 
 def test_metrics_http_server_endpoints():
-    server = MetricsServer(host="127.0.0.1", port=19092)
+    server = MetricsServer(host="127.0.0.1", port=0)
     server.start()
+    port = server.bound_port
 
     try:
+        # Allow threaded server socket event loop to initialize
+        time.sleep(0.05)
+
         # 1. Test /healthz
-        with urllib.request.urlopen("http://127.0.0.1:19092/healthz", timeout=2.0) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=3.0) as resp:
             assert resp.status == 200
             data = json.loads(resp.read().decode("utf-8"))
             assert data["status"] == "healthy"
 
         # 2. Test /readyz
-        with urllib.request.urlopen("http://127.0.0.1:19092/readyz", timeout=2.0) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/readyz", timeout=3.0) as resp:
             assert resp.status == 200
             data = json.loads(resp.read().decode("utf-8"))
             assert data["status"] in ("ready", "degraded")
 
         # 3. Test /metrics
-        with urllib.request.urlopen("http://127.0.0.1:19092/metrics", timeout=2.0) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=3.0) as resp:
             assert resp.status == 200
             content = resp.read().decode("utf-8")
             assert "devops_ai_" in content
 
         # 4. Test 404
         try:
-            urllib.request.urlopen("http://127.0.0.1:19092/nonexistent", timeout=2.0)
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/nonexistent", timeout=3.0)
             assert False, "Expected 404 HTTPError"
         except urllib.error.HTTPError as e:
             assert e.code == 404

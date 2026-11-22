@@ -68,6 +68,13 @@ class MetricsServer:
         self._server: Optional[_ThreadedHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
+    @property
+    def bound_port(self) -> int:
+        """Return the actual bound port, particularly when initialized with port 0."""
+        if self._server is not None:
+            return int(self._server.server_address[1])
+        return self.port
+
     def start(self) -> None:
         """Start the HTTP server on a background daemon thread."""
         if self._server is not None:
