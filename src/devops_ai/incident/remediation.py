@@ -3,6 +3,7 @@
 """Remediation advisor generating risk-classified advisory recommendations with safety guard rails."""
 
 import re
+import shlex
 from typing import List, Optional
 from devops_ai.core.logging import get_logger
 from devops_ai.incident.models import (
@@ -18,7 +19,8 @@ RE_DESTRUCTIVE_COMMANDS = re.compile(
     r"(?i)\b("
     r"delete|drop|truncate|rm|rmdir|kill\s+-9|pkill\s+-9|"
     r"purge|format|fdisk|mkfs|prune|drain\s+--force|"
-    r"destroy|chmod\s+777|chown\s+-R|iptables\s+-F"
+    r"destroy|terminate|uninstall|chmod\s+777|chown\s+-R|iptables\s+-F|"
+    r"shred|dd\s+if=|apt-get\s+remove|yum\s+remove|dpkg\s+-r"
     r")\b"
 )
 
@@ -26,8 +28,44 @@ RE_DESTRUCTIVE_COMMANDS = re.compile(
 RE_MUTATING_COMMANDS = re.compile(
     r"(?i)\b("
     r"restart|reboot|scale|set\s+resources|rollout|apply|stop|kill|"
-    r"patch|upgrade|rollback|undo|killall"
+    r"patch|upgrade|rollback|undo|killall|docker\s+kill"
     r")\b"
+)
+
+# Forbidden shell operators, subshell patterns, and dangerous execution utilities
+FORBIDDEN_SHELL_OPERATORS = re.compile(
+    r"[;&|><`$]|\b(?:bash|sh|zsh|eval|exec|python|python3|perl|ruby)\s+-c\b|\bbase64\s+-d\b"
+)
+
+# Explicit allowlist of approved read-only tool prefixes
+APPROVED_READ_ONLY_PREFIXES = (
+    "kubectl get",
+    "kubectl describe",
+    "kubectl logs",
+    "kubectl cluster-info",
+    "kubectl top",
+    "docker inspect",
+    "docker logs",
+    "docker ps",
+    "docker top",
+    "docker stats",
+    "free",
+    "uptime",
+    "dmesg",
+    "uname",
+    "vmstat",
+    "iostat",
+    "mpstat",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "ping",
+    "traceroute",
+    "nc -z",
+    "curl -I",
+    "curl --head",
+    "python -m devops_ai.cli provider check",
 )
 
 
@@ -35,37 +73,86 @@ class RemediationAdvisor:
     """Generates risk-classified advisory remediation playbooks for analyzed incidents.
 
     Enforces strict safety guard rails:
-    1. Read-only commands are classified as SAFE.
+    1. Only approved read-only commands matching the strict allowlist are classified as SAFE.
     2. Workload mutating commands are classified as MODERATE.
-    3. Destructive commands are ALWAYS classified as DANGEROUS.
-    4. Zero automated execution hooks: all recommendations are strictly advisory for human operators.
+    3. Destructive commands, shell chaining, and subshells are ALWAYS classified as DANGEROUS.
+    4. Unrecognized/unverified commands NEVER default to SAFE (elevated to MODERATE or DANGEROUS).
+    5. Zero automated execution hooks: all recommendations are strictly advisory for human operators.
     """
 
     @staticmethod
     def classify_command_risk(
         command: Optional[str], proposed_risk: RiskLevel = RiskLevel.SAFE
     ) -> RiskLevel:
-        """Classify command risk level with deterministic safety overrides.
-
-        Rule: A destructive command is NEVER classified as SAFE or MODERATE.
-        """
+        """Classify command risk level with conservative allowlist safety overrides."""
         if not command or not command.strip():
-            return proposed_risk
+            return proposed_risk if proposed_risk != RiskLevel.SAFE else RiskLevel.MODERATE
 
-        cmd = command.strip().lower()
+        cmd = command.strip()
+        cmd_lower = cmd.lower()
 
-        # Hard guardrail: Any destructive keyword forces DANGEROUS
-        if RE_DESTRUCTIVE_COMMANDS.search(cmd):
+        # 1. Hard guardrail: Any destructive keyword forces DANGEROUS
+        if RE_DESTRUCTIVE_COMMANDS.search(cmd_lower):
             return RiskLevel.DANGEROUS
 
-        # Workload mutating keyword forces at least MODERATE
-        if RE_MUTATING_COMMANDS.search(cmd):
+        # 2. Syntax validation with shlex
+        try:
+            shlex.split(cmd, posix=True)
+        except Exception:
+            return RiskLevel.DANGEROUS
+
+        # 3. Detect dangerous shell operators, subshells, pipes, command chaining
+        has_forbidden_ops = bool(FORBIDDEN_SHELL_OPERATORS.search(cmd))
+        if has_forbidden_ops:
+            # If it contains subshell, pipe to shell, eval, base64, or destructive scripts
+            if any(
+                tok in cmd_lower
+                for tok in (
+                    "bash",
+                    "sh",
+                    "eval",
+                    "python",
+                    "base64",
+                    "rm",
+                    "kill",
+                    "dangerous",
+                    "drop",
+                    "delete",
+                )
+            ):
+                return RiskLevel.DANGEROUS
+            if cmd.startswith(">") or cmd.startswith("<"):
+                return RiskLevel.DANGEROUS
+            # Any other chained or piped command is at least MODERATE
+            return RiskLevel.MODERATE
+
+        # 4. Workload mutating keyword forces at least MODERATE
+        if RE_MUTATING_COMMANDS.search(cmd_lower):
             return (
                 RiskLevel.MODERATE if proposed_risk != RiskLevel.DANGEROUS else RiskLevel.DANGEROUS
             )
 
-        # Pure read-only inspection commands
-        return proposed_risk
+        # 5. Strict Read-Only Allowlist Verification
+        def _matches_allowlist(target_cmd: str) -> bool:
+            return any(
+                target_cmd.startswith(prefix + " ")
+                or target_cmd == prefix
+                or (prefix == "nc -z" and target_cmd.startswith("nc -z"))
+                or (prefix == "curl -I" and target_cmd.startswith("curl -I"))
+                for prefix in APPROVED_READ_ONLY_PREFIXES
+            )
+
+        is_approved_prefix = _matches_allowlist(cmd)
+        if not is_approved_prefix and cmd.startswith("kubectl exec") and " -- " in cmd:
+            subcmd = cmd.split(" -- ", 1)[1].strip()
+            if _matches_allowlist(subcmd):
+                is_approved_prefix = True
+
+        if is_approved_prefix and not has_forbidden_ops:
+            return RiskLevel.SAFE
+
+        # 6. Conservative Default: Unrecognized commands must NEVER be classified as SAFE
+        return RiskLevel.MODERATE if proposed_risk == RiskLevel.SAFE else proposed_risk
 
     def generate_recommendations(self, incident: Incident) -> List[RemediationAction]:
         """Generate structured advisory recommendations based on incident root cause and evidence."""
@@ -95,7 +182,7 @@ class RemediationAdvisor:
                     explanation="Verify cgroup memory usage limits and container exit state before modifying limits.",
                     action_type="diagnostic",
                     risk_level=RiskLevel.SAFE,
-                    command=f"kubectl describe pod {comp} | grep -A 5 -E '(Last State|Limits)'",
+                    command=f"kubectl describe pod {comp}",
                     verification_step=f"Confirm Exit Code 137 and OOMKilled=true in pod termination details for {comp}.",
                     root_cause_ref=rc_ref,
                     evidence_refs=evidence_subset,
@@ -311,7 +398,7 @@ class RemediationAdvisor:
                     explanation="Deep diagnostic capture to isolate operational anomalies lacking deterministic signatures.",
                     action_type="diagnostic",
                     risk_level=RiskLevel.SAFE,
-                    command=f"kubectl describe pod {comp} && kubectl logs {comp} --tail=200",
+                    command=f"kubectl describe pod {comp}",
                     verification_step="Inspect output for unhandled exceptions or resource constraint warnings.",
                     root_cause_ref=rc_ref,
                     evidence_refs=evidence_subset,

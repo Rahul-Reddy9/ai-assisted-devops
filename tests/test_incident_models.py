@@ -148,3 +148,35 @@ def test_hypothesis_confidence_bounds():
             confidence=-0.1,  # Invalid
             tier="tier_2_ai",
         )
+
+
+def test_hypothesis_inferred_explanations_roundtrip_serialization():
+    """Verify inferred_explanations defaults cleanly and round-trips through serialization (MODEL-01)."""
+    # 1. Default empty list
+    hypo_default = RootCauseHypothesis(
+        title="Default Explanation",
+        description="Testing default inferred explanations",
+        confidence=0.75,
+        tier="tier_2_ai",
+    )
+    assert hypo_default.inferred_explanations == []
+
+    # 2. Explicit inferred explanations populated
+    hypo_explicit = RootCauseHypothesis(
+        title="Database Exhaustion",
+        description="Pool maxed out",
+        confidence=0.82,
+        tier="tier_2_ai",
+        supporting_evidence=["Active connections = 100/100"],
+        inferred_explanations=[
+            "Traffic spike coupled with unindexed query caused connection queueing."
+        ],
+    )
+    dumped = hypo_explicit.model_dump()
+    assert dumped["inferred_explanations"] == [
+        "Traffic spike coupled with unindexed query caused connection queueing."
+    ]
+
+    # 3. Round-trip validation
+    loaded = RootCauseHypothesis.model_validate(dumped)
+    assert loaded.inferred_explanations == hypo_explicit.inferred_explanations

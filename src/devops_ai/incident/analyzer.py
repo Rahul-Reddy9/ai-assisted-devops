@@ -251,9 +251,24 @@ class IncidentAnalyzer:
             if ai_hypothesis:
                 # Tier 2 AI investigation succeeded
                 t1_primary = incident.root_cause
-                incident.root_cause = ai_hypothesis
-                if t1_primary and t1_primary not in incident.alternative_hypotheses:
-                    incident.alternative_hypotheses.insert(0, t1_primary)
+
+                can_override = False
+                if t1_primary is None:
+                    can_override = True
+                elif t1_primary.is_confirmed:
+                    # Confirmed deterministic Tier 1 root cause requires confirmed Tier 2 with strictly higher confidence
+                    if (
+                        ai_hypothesis.is_confirmed
+                        and ai_hypothesis.confidence > t1_primary.confidence
+                    ):
+                        can_override = True
+                else:
+                    # Unconfirmed Tier 1 can be overridden if AI confidence >= Tier 1 confidence or if Tier 1 was fallback
+                    if (
+                        ai_hypothesis.confidence >= t1_primary.confidence
+                        or t1_primary.title == "Unknown Operational Anomaly"
+                    ):
+                        can_override = True
 
                 conf_val = (
                     float(ai_hypothesis.confidence)
@@ -261,6 +276,31 @@ class IncidentAnalyzer:
                     else 0.80
                 )
                 t2_now = datetime.datetime.now(datetime.timezone.utc)
+
+                if can_override:
+                    incident.root_cause = ai_hypothesis
+                    if t1_primary and t1_primary not in incident.alternative_hypotheses:
+                        incident.alternative_hypotheses.insert(0, t1_primary)
+                    incident.metadata["root_cause_precedence"] = "tier_2_override"
+                    timeline_event = (
+                        f"Tier 2 AI RCA completed: {ai_hypothesis.title} "
+                        f"(Confidence: {conf_val:.2f}, Confirmed: {ai_hypothesis.is_confirmed})"
+                    )
+                else:
+                    # Preserve authoritative Tier 1 finding as primary; store AI hypothesis in alternatives
+                    if ai_hypothesis not in incident.alternative_hypotheses:
+                        incident.alternative_hypotheses.insert(0, ai_hypothesis)
+                    incident.metadata["root_cause_precedence"] = "tier_1_preserved"
+                    incident.metadata["tier_2_override_rejected_reason"] = (
+                        f"Tier 1 finding '{t1_primary.title}' (confirmed: {t1_primary.is_confirmed}, "
+                        f"conf: {t1_primary.confidence:.2f}) preserved over Tier 2 hypothesis '{ai_hypothesis.title}' "
+                        f"(confirmed: {ai_hypothesis.is_confirmed}, conf: {conf_val:.2f})"
+                    )
+                    timeline_event = (
+                        f"Tier 2 AI RCA completed: preserved confirmed Tier 1 RCA '{t1_primary.title}'; "
+                        f"stored AI hypothesis in alternatives"
+                    )
+
                 incident.timeline.append(
                     TimelineEntry(
                         timestamp=t2_now,
@@ -270,17 +310,14 @@ class IncidentAnalyzer:
                         component=incident.components_affected[0]
                         if incident.components_affected
                         else "system",
-                        event=(
-                            f"Tier 2 AI RCA completed: {ai_hypothesis.title} "
-                            f"(Confidence: {conf_val:.2f}, Confirmed: {ai_hypothesis.is_confirmed})"
-                        ),
+                        event=timeline_event,
                         severity=incident.severity,
                     )
                 )
                 record_rca_execution("tier_2", "success", t2_duration)
                 logger.info(
                     f"Tier 2 AI RCA completed for '{incident.incident_id}': '{ai_hypothesis.title}' "
-                    f"(Confidence: {conf_val:.2f})"
+                    f"(Confidence: {conf_val:.2f}, override: {can_override})"
                 )
             else:
                 # Tier 2 failed or was ungrounded; preserve Tier 1 results

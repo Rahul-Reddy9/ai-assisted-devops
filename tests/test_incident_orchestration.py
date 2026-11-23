@@ -201,3 +201,87 @@ def test_application_and_unknown_categories_follow_escalation_policy():
     reasons = analyzed.metadata.get("escalation_reasons", [])
     assert any("application" in r.lower() for r in reasons)
     assert analyzed.metadata.get("tier_2_skipped") is True
+
+
+def test_confirmed_tier_1_root_cause_cannot_be_demoted_by_unconfirmed_ai():
+    """Verify confirmed deterministic Tier 1 root cause is preserved over unconfirmed Tier 2 AI hypothesis (LOGIC-01)."""
+    incident = _make_base_incident(
+        alert_msg="Container exited with code 137",
+        component="payment-worker",
+        container_states=[{"status": "Exited (137)", "exit_code": 137, "oom_killed": True}],
+    )
+
+    # Mock Tier 2 returning an unconfirmed AI speculation with lower confidence
+    mock_ai_hypothesis = RootCauseHypothesis(
+        title="Application Slow Heap Leak",
+        description="Gradual heap allocation growth resulted in memory pressure.",
+        confidence=0.74,
+        tier="tier_2_ai",
+        is_confirmed=False,
+        is_unsupported=False,
+    )
+
+    mock_ai_engine = MagicMock(spec=Tier2AIEngine)
+    mock_ai_engine.investigate.return_value = mock_ai_hypothesis
+
+    analyzer = IncidentAnalyzer(auto_tier2=True, ai_engine=mock_ai_engine)
+    # Force Tier 2 to run despite strong Tier 1 result
+    analyzed = analyzer.analyze(incident, force_tier2=True)
+
+    # 1. Primary root cause MUST remain the confirmed deterministic Tier 1 finding!
+    assert (
+        analyzed.root_cause.title
+        == "Container Terminated by Linux Kernel Out-Of-Memory Killer (OOMKilled)"
+    )
+    assert analyzed.root_cause.is_confirmed is True
+    assert analyzed.root_cause.confidence >= 0.90
+    assert analyzed.root_cause.tier == "tier_1_deterministic"
+
+    # 2. Precedence metadata confirms preservation
+    assert analyzed.metadata["root_cause_precedence"] == "tier_1_preserved"
+    assert (
+        "preserved over Tier 2 hypothesis" in analyzed.metadata["tier_2_override_rejected_reason"]
+    )
+
+    # 3. AI hypothesis stored in alternative hypotheses without loss
+    assert len(analyzed.alternative_hypotheses) >= 1
+    assert analyzed.alternative_hypotheses[0].title == "Application Slow Heap Leak"
+
+
+def test_confirmed_tier_2_ai_with_higher_confidence_can_override_tier_1():
+    """Verify confirmed Tier 2 hypothesis with strictly higher confidence can legitimately override Tier 1 (LOGIC-01)."""
+    incident = _make_base_incident(
+        alert_msg="High memory utilization warning",
+        component="cache-node",
+    )
+    # Tier 1 has moderate confirmed confidence 0.82
+    incident.root_cause = RootCauseHypothesis(
+        title="Tier 1 Intermediate Hypothesis",
+        description="Preliminary match",
+        confidence=0.82,
+        tier="tier_1_deterministic",
+        is_confirmed=True,
+    )
+
+    # Tier 2 provides definitive confirmed hypothesis with higher confidence 0.91
+    mock_ai_hypothesis = RootCauseHypothesis(
+        title="Redis Eviction Policy Throttling",
+        description="AllKeys-LRU eviction thrashing under sustained write volume.",
+        confidence=0.91,
+        tier="tier_2_ai",
+        is_confirmed=True,
+    )
+
+    mock_ai_engine = MagicMock(spec=Tier2AIEngine)
+    mock_ai_engine.investigate.return_value = mock_ai_hypothesis
+
+    analyzer = IncidentAnalyzer(auto_tier2=True, ai_engine=mock_ai_engine)
+    analyzed = analyzer.analyze(incident, force_tier2=True)
+
+    assert analyzed.root_cause.title == "Redis Eviction Policy Throttling"
+    assert analyzed.root_cause.confidence == 0.91
+    assert analyzed.metadata["root_cause_precedence"] == "tier_2_override"
+    assert (
+        analyzed.alternative_hypotheses[0].title
+        == "High Memory Utilization / Approaching Saturation"
+    )

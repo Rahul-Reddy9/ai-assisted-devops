@@ -114,6 +114,7 @@ class RootCauseHypothesis(BaseModel):
     tier: Literal["tier_1_deterministic", "tier_2_ai"]
     evidence_refs: List[str] = Field(default_factory=list)
     supporting_evidence: List[str] = Field(default_factory=list)
+    inferred_explanations: List[str] = Field(default_factory=list)
     contradicting_evidence: List[str] = Field(default_factory=list)
     is_confirmed: bool = False
     is_unsupported: bool = False
