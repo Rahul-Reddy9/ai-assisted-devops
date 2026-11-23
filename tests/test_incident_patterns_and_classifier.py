@@ -389,3 +389,258 @@ def test_classifier_justified_critical_severity_on_multi_component_outage():
     assert res.severity == Severity.CRITICAL
     assert res.is_critical_justified is True
     assert res.blast_radius == "systemic"
+
+
+# --- Audit Finding F-04 Tests: Database Connection Refused Specificity ---
+
+
+def test_f04_database_connection_refused_supported_databases():
+    """Verify PostgreSQL, MySQL, Redis, and MongoDB connection failures are recognized as DB_CONNECTION_REFUSED."""
+    # 1. PostgreSQL
+    alert_pg = _make_alert(
+        "A-PG", AlertSource.LOGS, "pg-db", "dial tcp 127.0.0.1:5432: connect: connection refused"
+    )
+    evid_pg = CorrelatedEvidence(
+        evidence_catalog={
+            "EVID-1": "psycopg2.OperationalError: could not connect to server: Connection refused"
+        }
+    )
+    matches_pg = FailurePatternCatalog.match_patterns([alert_pg], evid_pg)
+    assert any(m.pattern_id == "DB_CONNECTION_REFUSED" for m in matches_pg)
+
+    # 2. MySQL
+    alert_my = _make_alert(
+        "A-MY", AlertSource.LOGS, "mysql-db", "Can't connect to MySQL server on 'mysql':3306"
+    )
+    evid_my = CorrelatedEvidence(
+        evidence_catalog={
+            "EVID-2": (
+                "pymysql.err.OperationalError: (2003, \"Can't connect to MySQL server on 'db':3306 (111 Connection refused)\")"
+            )
+        }
+    )
+    matches_my = FailurePatternCatalog.match_patterns([alert_my], evid_my)
+    assert any(m.pattern_id == "DB_CONNECTION_REFUSED" for m in matches_my)
+
+    # 3. Redis
+    alert_rd = _make_alert("A-RD", AlertSource.LOGS, "redis", "Redis connection refused on 6379")
+    evid_rd = CorrelatedEvidence(
+        evidence_catalog={
+            "EVID-3": (
+                "redis.exceptions.ConnectionError: Error connecting to redis:6379. Connection refused."
+            )
+        }
+    )
+    matches_rd = FailurePatternCatalog.match_patterns([alert_rd], evid_rd)
+    assert any(m.pattern_id == "DB_CONNECTION_REFUSED" for m in matches_rd)
+
+    # 4. MongoDB
+    alert_mg = _make_alert("A-MG", AlertSource.LOGS, "mongodb", "MongoDB connect error")
+    evid_mg = CorrelatedEvidence(
+        evidence_catalog={
+            "EVID-4": (
+                "pymongo.errors.ServerSelectionTimeoutError: localhost:27017: [Errno 111] Connection refused"
+            )
+        }
+    )
+    matches_mg = FailurePatternCatalog.match_patterns([alert_mg], evid_mg)
+    assert any(m.pattern_id == "DB_CONNECTION_REFUSED" for m in matches_mg)
+
+
+def test_f04_database_connection_refused_excludes_external_http_failures():
+    """Verify Stripe HTTP 500, Auth0 timeout, and generic HTTP endpoints are NOT diagnosed as DB_CONNECTION_REFUSED."""
+    # 1. Stripe HTTP 500
+    alert_stripe = _make_alert(
+        "A-STRIPE",
+        AlertSource.LOGS,
+        "payment-service",
+        "Stripe payment request failed: HTTP 500 Internal Server Error from api.stripe.com",
+    )
+    evid_stripe = CorrelatedEvidence(
+        evidence_catalog={
+            "EVID-S": "Failed to process charge: Stripe HTTP 500 internal server error"
+        }
+    )
+    m_stripe = FailurePatternCatalog.match_patterns([alert_stripe], evid_stripe)
+    assert not any(m.pattern_id == "DB_CONNECTION_REFUSED" for m in m_stripe)
+
+    # 2. Auth0 timeout
+    alert_auth0 = _make_alert(
+        "A-AUTH0",
+        AlertSource.LOGS,
+        "auth-service",
+        "Auth0 authentication timeout after 30s communicating with https://auth0.com/oauth/token",
+    )
+    evid_auth0 = CorrelatedEvidence(
+        evidence_catalog={"EVID-A": "Auth0 token exchange timeout: request timed out after 30s"}
+    )
+    m_auth0 = FailurePatternCatalog.match_patterns([alert_auth0], evid_auth0)
+    assert not any(m.pattern_id == "DB_CONNECTION_REFUSED" for m in m_auth0)
+
+    # 3. Generic external HTTP endpoint failure
+    alert_http = _make_alert(
+        "A-HTTP",
+        AlertSource.LOGS,
+        "client-proxy",
+        "connection to https://api.partner.example.com:443 failed: connection refused",
+    )
+    evid_http = CorrelatedEvidence(
+        evidence_catalog={"EVID-H": "Outbound HTTP request failed: connection refused"}
+    )
+    m_http = FailurePatternCatalog.match_patterns([alert_http], evid_http)
+    assert not any(m.pattern_id == "DB_CONNECTION_REFUSED" for m in m_http)
+
+
+# --- Audit Finding F-05 Tests: CrashLoopBackOff False Positive Prevention ---
+
+
+def test_f05_crash_loop_backoff_requires_active_failure():
+    """Verify CrashLoopBackOff requires an active failure and does not trigger on healthy running pods with restarts."""
+    alert = _make_alert("A-K8S", AlertSource.KUBERNETES, "web-pod", "Pod status report")
+
+    # 1. Healthy Running pod with restart count 3 and exit code 0 must NOT match
+    evid_healthy = CorrelatedEvidence(
+        evidence_catalog={"EVID-1": "Pod status report: running"},
+        k8s_events=[{"status": "Running", "reason": "Running", "restarts": 3, "exit_code": 0}],
+        container_states=[{"status": "running", "exit_code": 0}],
+    )
+    m_healthy = FailurePatternCatalog.match_patterns([alert], evid_healthy)
+    assert not any(m.pattern_id == "K8S_CRASH_LOOP_BACKOFF" for m in m_healthy)
+
+    # 2. Historical restarts (restarts=5) without current failure must NOT match
+    evid_hist = CorrelatedEvidence(
+        evidence_catalog={"EVID-2": "Pod active for 14 days, historical restarts: 5"},
+        k8s_events=[{"status": "Running", "reason": "Running", "restarts": 5, "exit_code": 0}],
+    )
+    m_hist = FailurePatternCatalog.match_patterns([alert], evid_hist)
+    assert not any(m.pattern_id == "K8S_CRASH_LOOP_BACKOFF" for m in m_hist)
+
+    # 3. Missing container state with only normal k8s event must NOT match
+    evid_missing = CorrelatedEvidence(
+        evidence_catalog={"EVID-3": "Routine pod health check"},
+        k8s_events=[{"status": "running", "restarts": 3}],
+        container_states=[],
+    )
+    m_missing = FailurePatternCatalog.match_patterns([alert], evid_missing)
+    assert not any(m.pattern_id == "K8S_CRASH_LOOP_BACKOFF" for m in m_missing)
+
+    # 4. Explicit CrashLoopBackOff state / message DOES match
+    evid_clb = CorrelatedEvidence(
+        evidence_catalog={"EVID-4": "Back-off 40s restarting failed container"},
+        k8s_events=[
+            {"reason": "CrashLoopBackOff", "message": "Back-off restarting failed container"}
+        ],
+    )
+    m_clb = FailurePatternCatalog.match_patterns([alert], evid_clb)
+    assert any(m.pattern_id == "K8S_CRASH_LOOP_BACKOFF" for m in m_clb)
+
+    # 5. Failed container with non-zero exit code and restarts >= 3 DOES match
+    evid_failed = CorrelatedEvidence(
+        evidence_catalog={"EVID-5": "Container crashed on entrypoint"},
+        k8s_events=[{"status": "Waiting", "reason": "Error", "restarts": 3, "exit_code": 1}],
+        container_states=[{"status": "waiting", "exit_code": 1, "reason": "Error"}],
+    )
+    m_failed = FailurePatternCatalog.match_patterns([alert], evid_failed)
+    assert any(m.pattern_id == "K8S_CRASH_LOOP_BACKOFF" for m in m_failed)
+
+    # 6. Conflicting status information: running pod with exit code 0 does NOT match
+    evid_conflict = CorrelatedEvidence(
+        evidence_catalog={"EVID-6": "Status check"},
+        k8s_events=[{"status": "running", "exit_code": 0, "restarts": 4}],
+    )
+    m_conflict = FailurePatternCatalog.match_patterns([alert], evid_conflict)
+    assert not any(m.pattern_id == "K8S_CRASH_LOOP_BACKOFF" for m in m_conflict)
+
+
+# --- Audit Finding F-06 Tests: LLM Rate-Limiting Context Requirement ---
+
+
+def test_f06_llm_rate_limiting_requires_provider_context():
+    """Verify LLM rate limiting requires AI provider context and excludes generic Nginx/REST API 429s."""
+    # 1. Gemini quota exceeded (positive match)
+    alert_gemini = _make_alert(
+        "A-GEMINI",
+        AlertSource.LOGS,
+        "gemini-client",
+        "429 Quota exceeded for model gemini-1.5-pro: RESOURCE_EXHAUSTED",
+    )
+    evid_gemini = CorrelatedEvidence(
+        evidence_catalog={
+            "EVID-G": (
+                "google.api_core.exceptions.ResourceExhausted: 429 Quota exceeded for quota metric 'GenerateContent requests'"
+            )
+        }
+    )
+    m_gemini = FailurePatternCatalog.match_patterns([alert_gemini], evid_gemini)
+    assert any(m.pattern_id == "LLM_RATE_LIMITING" for m in m_gemini)
+
+    # 2. Ollama provider rate limit (positive match)
+    alert_ollama = _make_alert(
+        "A-OLLAMA",
+        AlertSource.LOGS,
+        "ollama-worker",
+        "ollama: 429 Too Many Requests: model slot unavailable or request limit reached",
+    )
+    evid_ollama = CorrelatedEvidence(
+        evidence_catalog={
+            "EVID-O": "ollama returned 429 Too Many Requests: requests per minute limit reached"
+        }
+    )
+    m_ollama = FailurePatternCatalog.match_patterns([alert_ollama], evid_ollama)
+    assert any(m.pattern_id == "LLM_RATE_LIMITING" for m in m_ollama)
+
+    # 3. Model TPM/RPM exhaustion (positive match)
+    alert_tpm = _make_alert(
+        "A-TPM",
+        AlertSource.LOGS,
+        "llm-proxy",
+        "429 Too Many Requests: TPM limit exceeded for provider",
+    )
+    evid_tpm = CorrelatedEvidence(
+        evidence_catalog={
+            "EVID-T": "Tokens per minute (TPM) quota exhausted. Rate limit exceeded (429)."
+        }
+    )
+    m_tpm = FailurePatternCatalog.match_patterns([alert_tpm], evid_tpm)
+    assert any(m.pattern_id == "LLM_RATE_LIMITING" for m in m_tpm)
+
+    # 4. Nginx client rate limit (negative: MUST NOT MATCH)
+    alert_nginx = _make_alert(
+        "A-NGINX",
+        AlertSource.LOGS,
+        "nginx-ingress",
+        "nginx: 429 Too Many Requests limiting requests by zone per_ip, client: 192.168.1.5",
+    )
+    evid_nginx = CorrelatedEvidence(
+        evidence_catalog={
+            "EVID-N": (
+                "nginx: [error] 429 Too Many Requests limiting requests by zone per_ip, client: 192.168.1.5"
+            )
+        }
+    )
+    m_nginx = FailurePatternCatalog.match_patterns([alert_nginx], evid_nginx)
+    assert not any(m.pattern_id == "LLM_RATE_LIMITING" for m in m_nginx)
+
+    # 5. Generic REST API HTTP 429 (negative: MUST NOT MATCH)
+    alert_rest = _make_alert(
+        "A-REST",
+        AlertSource.LOGS,
+        "user-service",
+        "Generic REST API client rate limit exceeded: HTTP 429 Too Many Requests for endpoint /api/users",
+    )
+    evid_rest = CorrelatedEvidence(
+        evidence_catalog={"EVID-R": "Client-facing HTTP 429 Too Many Requests returned to caller"}
+    )
+    m_rest = FailurePatternCatalog.match_patterns([alert_rest], evid_rest)
+    assert not any(m.pattern_id == "LLM_RATE_LIMITING" for m in m_rest)
+
+    # 6. Unrelated application throttling (negative: MUST NOT MATCH)
+    alert_app = _make_alert(
+        "A-APP",
+        AlertSource.LOGS,
+        "customer-portal",
+        "Application throttling: client exceeded limit of 100 requests per hour",
+    )
+    evid_app = CorrelatedEvidence(evidence_catalog={"EVID-A": "Client exceeded hourly rate limit"})
+    m_app = FailurePatternCatalog.match_patterns([alert_app], evid_app)
+    assert not any(m.pattern_id == "LLM_RATE_LIMITING" for m in m_app)

@@ -3,7 +3,8 @@
 """Multi-source incident correlation engine with sliding temporal window and dependency tracking."""
 
 import datetime
-from typing import Dict, List, Optional, Tuple
+import re
+from typing import Any, Dict, List, Optional, Tuple, Union
 import uuid
 
 from devops_ai.core.config import get_settings
@@ -20,7 +21,7 @@ from devops_ai.incident.models import (
 
 logger = get_logger("incident.correlator")
 
-# Common dependency relationships: (dependency/upstream, dependent/downstream)
+# Common directed dependency relationships: (upstream_dependency, downstream_dependent)
 DEFAULT_DEPENDENCY_GRAPH: List[Tuple[str, str]] = [
     ("postgres", "api"),
     ("postgres", "backend"),
@@ -37,28 +38,137 @@ DEFAULT_DEPENDENCY_GRAPH: List[Tuple[str, str]] = [
     ("api", "web"),
 ]
 
+# Allowed qualifier suffixes for service instance matching
+_VALID_QUALIFIERS = {
+    "primary",
+    "replica",
+    "slave",
+    "master",
+    "leader",
+    "follower",
+    "pod",
+    "svc",
+    "service",
+    "worker",
+    "app",
+    "server",
+    "db",
+    "node",
+    "ingress",
+    "egress",
+    "backend",
+    "frontend",
+    "prod",
+    "staging",
+    "dev",
+}
+
+
+def normalize_timestamp(dt: Union[datetime.datetime, str, Any]) -> datetime.datetime:
+    """Centralized timestamp normalization to timezone-aware UTC.
+
+    Policy:
+    - If dt is timezone-naive, it is explicitly assumed to represent UTC.
+    - If dt has another timezone offset, it is converted to UTC.
+    - If dt is an ISO 8601 string, it is parsed and normalized to UTC.
+    - If dt is None or invalid, ValueError is raised to avoid silently inventing timestamps.
+    """
+    if dt is None:
+        raise ValueError("Timestamp cannot be None")
+
+    if isinstance(dt, str):
+        try:
+            dt = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid timestamp string '{dt}': {e}") from e
+
+    if not isinstance(dt, datetime.datetime):
+        raise ValueError(f"Expected datetime object or ISO string, got {type(dt).__name__}")
+
+    if dt.tzinfo is None:
+        # Documented policy: naive datetimes are interpreted as UTC
+        return dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(datetime.timezone.utc)
+
 
 def _normalize_component_name(name: str) -> str:
     """Normalize component or service name for comparison."""
     return name.strip().lower()
 
 
+def _tokenize_component(name: str) -> List[str]:
+    """Tokenize component name on delimiter boundaries (-, _, ., :, /)."""
+    normalized = _normalize_component_name(name)
+    return [t for t in re.split(r"[-_./:]+", normalized) if t]
+
+
+def _is_token_prefix_match(tokens_a: List[str], tokens_b: List[str]) -> bool:
+    """Check if one token sequence is a prefix of the other with valid qualifier suffixes.
+
+    e.g., ['web', 'app'] and ['web', 'app', '1'] -> True
+          ['api'] and ['api', 'v2'] -> True
+          ['postgres'] and ['postgres', 'primary'] -> True
+    Rejects:
+          ['api'] and ['capital', 'mgmt'] -> False
+          ['app'] and ['wrapper'] -> False
+          ['auth'] and ['author', 'service'] -> False
+    """
+    if not tokens_a or not tokens_b:
+        return False
+
+    short_tokens, long_tokens = (
+        (tokens_a, tokens_b) if len(tokens_a) <= len(tokens_b) else (tokens_b, tokens_a)
+    )
+
+    # Must match the exact prefix tokens
+    if long_tokens[: len(short_tokens)] != short_tokens:
+        return False
+
+    # The remaining tokens in long_tokens must be qualifier/instance identifiers
+    remaining = long_tokens[len(short_tokens) :]
+    for rem in remaining:
+        is_num = rem.isdigit()
+        is_ver = bool(re.match(r"^v\d+$", rem))
+        is_hash = bool(re.match(r"^[0-9a-f]{5,}$", rem))
+        if not (is_num or is_ver or is_hash or rem in _VALID_QUALIFIERS):
+            return False
+
+    return True
+
+
+def _is_upstream_of(upstream_comp: str, downstream_comp: str) -> bool:
+    """Check if upstream_comp is a direct dependency of downstream_comp using token matching."""
+    tokens_up = set(_tokenize_component(upstream_comp))
+    tokens_down = set(_tokenize_component(downstream_comp))
+    for up, down in DEFAULT_DEPENDENCY_GRAPH:
+        if up in tokens_up and down in tokens_down:
+            return True
+    return False
+
+
+def _has_dependency(comp_a: str, comp_b: str) -> bool:
+    """Check if two components have an upstream/downstream relationship in either direction."""
+    return _is_upstream_of(comp_a, comp_b) or _is_upstream_of(comp_b, comp_a)
+
+
 def _components_are_related(comp_a: str, comp_b: str) -> bool:
-    """Determine whether two components are identical, shared service, or have a direct dependency."""
+    """Determine whether two components are identical, shared service instance, or have a direct dependency."""
     a = _normalize_component_name(comp_a)
     b = _normalize_component_name(comp_b)
 
     if a == b:
         return True
 
-    # Substring / container prefix match (e.g. 'web-app-1' and 'web-app', 'pod-api-xyz' and 'api')
-    if a in b or b in a:
+    tokens_a = _tokenize_component(a)
+    tokens_b = _tokenize_component(b)
+
+    # Delimiter-aware prefix/instance matching
+    if _is_token_prefix_match(tokens_a, tokens_b):
         return True
 
-    # Dependency graph match (upstream -> downstream or downstream -> upstream)
-    for upstream, downstream in DEFAULT_DEPENDENCY_GRAPH:
-        if (upstream in a and downstream in b) or (upstream in b and downstream in a):
-            return True
+    # Dependency graph match (upstream <-> downstream)
+    if _has_dependency(comp_a, comp_b):
+        return True
 
     return False
 
@@ -86,16 +196,18 @@ class IncidentCorrelator:
         """Determine whether two alerts should be correlated into the same incident.
 
         Correlated if:
-        1. Both occur within the sliding temporal window.
-        2. AND have an identity, dependency, or shared evidence link.
+        1. Both occur within the sliding temporal window (evaluated in UTC).
+        2. AND have an identity, delimiter-aware service instance, dependency, or shared container link.
         Two completely unrelated components occurring at the same time are NOT correlated.
         """
-        # 1. Temporal Proximity check
-        dt = abs((alert_a.timestamp - alert_b.timestamp).total_seconds())
+        # 1. Temporal Proximity check with normalized UTC timestamps
+        t_a = normalize_timestamp(alert_a.timestamp)
+        t_b = normalize_timestamp(alert_b.timestamp)
+        dt = abs((t_a - t_b).total_seconds())
         if dt > self.window_seconds:
             return False
 
-        # 2. Component or dependency relationship
+        # 2. Component or dependency relationship (delimiter-aware)
         if _components_are_related(alert_a.component, alert_b.component):
             return True
 
@@ -110,12 +222,11 @@ class IncidentCorrelator:
         if pod_a and pod_b and str(pod_a) == str(pod_b):
             return True
 
-        # 4. Shared specific error pattern or signature (e.g. both reporting OOM or same host exhaustion)
-        msg_a = alert_a.message.lower()
-        msg_b = alert_b.message.lower()
-        shared_keywords = ("oom", "137", "connection refused", "econnrefused", "rate limit")
-        for kw in shared_keywords:
-            if kw in msg_a and kw in msg_b:
+        # 4. Shared host/node name with metric/container context
+        host_a = alert_a.raw_data.get("host") or alert_a.raw_data.get("node")
+        host_b = alert_b.raw_data.get("host") or alert_b.raw_data.get("node")
+        if host_a and host_b and str(host_a) == str(host_b) and str(host_a).strip():
+            if alert_a.source == AlertSource.METRICS or alert_b.source == AlertSource.METRICS:
                 return True
 
         return False
@@ -128,13 +239,15 @@ class IncidentCorrelator:
         """Correlate a single alert into an existing active incident, or create a new incident."""
         now = datetime.datetime.now(datetime.timezone.utc)
         target_incident: Optional[Incident] = None
+        alert_ts = normalize_timestamp(alert.timestamp)
 
         # Search for a matching active incident within the correlation window
         for inc in active_incidents:
             if inc.status in (IncidentStatus.RESOLVED, IncidentStatus.CLOSED):
                 continue
 
-            time_diff = abs((alert.timestamp - inc.updated_at).total_seconds())
+            inc_ts = normalize_timestamp(inc.updated_at)
+            time_diff = abs((alert_ts - inc_ts).total_seconds())
             if time_diff > self.window_seconds:
                 continue
 
@@ -158,14 +271,16 @@ class IncidentCorrelator:
         if not alerts:
             return []
 
-        # Sort chronologically, handling timezone-aware datetimes
-        sorted_alerts = sorted(alerts, key=lambda a: a.timestamp)
+        # Sort chronologically, handling timezone-aware and naive datetimes safely
+        sorted_alerts = sorted(alerts, key=lambda a: normalize_timestamp(a.timestamp))
         incidents: List[Incident] = []
 
         for alert in sorted_alerts:
+            alert_ts = normalize_timestamp(alert.timestamp)
             matched_inc: Optional[Incident] = None
             for inc in incidents:
-                time_diff = abs((alert.timestamp - inc.updated_at).total_seconds())
+                inc_ts = normalize_timestamp(inc.updated_at)
+                time_diff = abs((alert_ts - inc_ts).total_seconds())
                 if time_diff <= self.window_seconds:
                     if any(
                         self.are_alerts_correlatable(alert, existing) for existing in inc.alerts
@@ -176,7 +291,7 @@ class IncidentCorrelator:
             if matched_inc:
                 self._merge_alert_into_incident(matched_inc, alert)
             else:
-                new_inc = self._create_incident_from_alert(alert, alert.timestamp)
+                new_inc = self._create_incident_from_alert(alert, alert_ts)
                 incidents.append(new_inc)
 
         return incidents
@@ -202,9 +317,10 @@ class IncidentCorrelator:
         self._add_alert_to_evidence(incident.evidence, alert)
 
         # Append timeline entry
+        norm_ts = normalize_timestamp(alert.timestamp)
         incident.timeline.append(
             TimelineEntry(
-                timestamp=alert.timestamp,
+                timestamp=norm_ts,
                 source=alert.source,
                 component=alert.component,
                 event=f"Correlated alert: {alert.message}",
@@ -212,7 +328,7 @@ class IncidentCorrelator:
             )
         )
 
-        # Detect cascading failures
+        # Detect cascading failures (participating subgraph only)
         cascade_chain = self._detect_cascade(incident.components_affected, incident.alerts)
         if cascade_chain:
             incident.metadata["cascading_failure"] = True
@@ -227,11 +343,14 @@ class IncidentCorrelator:
         if sev_rank.index(alert.severity.value) > sev_rank.index(incident.severity.value):
             incident.severity = alert.severity
 
-        incident.updated_at = max(incident.updated_at, alert.timestamp)
+        inc_ts = normalize_timestamp(incident.updated_at)
+        incident.updated_at = max(inc_ts, norm_ts)
 
     def _create_incident_from_alert(self, alert: Alert, now: datetime.datetime) -> Incident:
         """Create a new incident initialized from a single alert."""
-        ts_str = now.strftime("%Y%m%d")
+        norm_ts = normalize_timestamp(now)
+        alert_ts = normalize_timestamp(alert.timestamp)
+        ts_str = norm_ts.strftime("%Y%m%d")
         rand_id = uuid.uuid4().hex[:6].upper()
         incident_id = f"INC-{ts_str}-{rand_id}"
 
@@ -245,13 +364,13 @@ class IncidentCorrelator:
             category=Category.UNKNOWN,
             severity=alert.severity,
             status=IncidentStatus.DETECTED,
-            created_at=alert.timestamp,
-            updated_at=alert.timestamp,
+            created_at=alert_ts,
+            updated_at=alert_ts,
             components_affected=[alert.component],
             alerts=[alert],
             timeline=[
                 TimelineEntry(
-                    timestamp=alert.timestamp,
+                    timestamp=alert_ts,
                     source=alert.source,
                     component=alert.component,
                     event=f"Initial alert: {alert.message}",
@@ -302,24 +421,30 @@ class IncidentCorrelator:
             evidence.metric_anomalies[alert.component] = val
 
     def _detect_cascade(self, components: List[str], alerts: List[Alert]) -> List[str]:
-        """Detect whether alerts form a cascading failure chain based on timestamps and dependencies."""
+        """Detect whether alerts form a cascading failure chain based on timestamps and dependencies.
+
+        Returns ONLY the participating dependency subgraph in causal timestamp order.
+        Unrelated earlier alerts are never included as cascade roots.
+        """
         if len(components) < 2:
             return []
 
-        # Find chronologically ordered components
+        # Find chronologically ordered components using normalized UTC timestamps
         comp_first_seen: Dict[str, datetime.datetime] = {}
-        for a in sorted(alerts, key=lambda x: x.timestamp):
+        for a in sorted(alerts, key=lambda x: normalize_timestamp(x.timestamp)):
             if a.component not in comp_first_seen:
-                comp_first_seen[a.component] = a.timestamp
+                comp_first_seen[a.component] = normalize_timestamp(a.timestamp)
 
         ordered_comps = sorted(comp_first_seen.keys(), key=lambda c: comp_first_seen[c])
 
-        # Verify dependency order
-        for i in range(len(ordered_comps) - 1):
-            c1 = _normalize_component_name(ordered_comps[i])
-            c2 = _normalize_component_name(ordered_comps[i + 1])
-            for upstream, downstream in DEFAULT_DEPENDENCY_GRAPH:
-                if upstream in c1 and downstream in c2:
-                    return ordered_comps
+        # Find the longest directed dependency path among ordered components
+        longest_chain: List[str] = []
+        for i, start_comp in enumerate(ordered_comps):
+            current_chain = [start_comp]
+            for next_comp in ordered_comps[i + 1 :]:
+                if _is_upstream_of(current_chain[-1], next_comp):
+                    current_chain.append(next_comp)
+            if len(current_chain) > len(longest_chain):
+                longest_chain = current_chain
 
-        return []
+        return longest_chain if len(longest_chain) >= 2 else []

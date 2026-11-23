@@ -59,12 +59,17 @@ class IncidentAnalyzer:
         for pm in pattern_matches:
             # Validate evidence IDs against actual catalog
             validated_refs = [ref for ref in pm.evidence_refs if ref in valid_catalog_keys]
+            is_unsupported = len(validated_refs) == 0
 
             desc = pm.description
             if pm.missing_evidence:
                 desc += f" (Uncorroborated: Missing {', '.join(pm.missing_evidence)})"
 
             conf_score = pm.confidence_breakdown.final_score if pm.confidence_breakdown else 0.50
+            if is_unsupported:
+                # Cap unsupported hypothesis confidence at 0.30 before ranking and escalation
+                conf_score = min(conf_score, 0.30)
+                desc += " [UNSUPPORTED: No valid evidence citations found in catalog; confidence capped at 0.30]"
 
             hypotheses.append(
                 RootCauseHypothesis(
@@ -75,8 +80,8 @@ class IncidentAnalyzer:
                     evidence_refs=validated_refs,
                     supporting_evidence=pm.supporting_evidence,
                     contradicting_evidence=pm.contradicting_evidence,
-                    is_confirmed=pm.is_confirmed,
-                    is_unsupported=len(validated_refs) == 0,
+                    is_confirmed=pm.is_confirmed and not is_unsupported,
+                    is_unsupported=is_unsupported,
                 )
             )
 
@@ -125,9 +130,17 @@ class IncidentAnalyzer:
         incident.metadata["classification_reason"] = class_result.reason
         incident.metadata["blast_radius"] = class_result.blast_radius
 
-        # Store confidence scoring breakdown
+        # Store confidence scoring breakdown (preserving original calculation and recording cap)
         if primary_pm and primary_pm.confidence_breakdown:
-            incident.metadata["confidence_breakdown"] = primary_pm.confidence_breakdown.model_dump()
+            cb_dict = primary_pm.confidence_breakdown.model_dump()
+            if primary_hypothesis.is_unsupported:
+                cb_dict["uncapped_score"] = cb_dict["final_score"]
+                cb_dict["final_score"] = primary_hypothesis.confidence
+                cb_dict["is_unsupported"] = True
+                cb_dict["capped_reason"] = (
+                    "Confidence capped at 0.30 because no verified evidence citations exist in catalog"
+                )
+            incident.metadata["confidence_breakdown"] = cb_dict
         else:
             incident.metadata["confidence_breakdown"] = {
                 "base_score": 0.35,
@@ -135,6 +148,7 @@ class IncidentAnalyzer:
                 "corroboration_bonus": 0.0,
                 "contradiction_penalty": 0.0,
                 "final_score": primary_hypothesis.confidence,
+                "is_unsupported": primary_hypothesis.is_unsupported,
                 "explanation": "Default fallback breakdown",
             }
 
@@ -164,6 +178,13 @@ class IncidentAnalyzer:
                 escalation_reasons.append(
                     f"Ambiguous competing hypotheses with delta {diff:.2f} < 0.15 margin"
                 )
+
+        # Condition D: Top hypothesis is unsupported by verified evidence references
+        if primary_hypothesis.is_unsupported:
+            escalate_to_tier_2 = True
+            escalation_reasons.append(
+                "Top hypothesis is unsupported by verified evidence references in catalog"
+            )
 
         incident.metadata["escalate_to_tier_2"] = escalate_to_tier_2
         incident.metadata["escalation_reasons"] = escalation_reasons

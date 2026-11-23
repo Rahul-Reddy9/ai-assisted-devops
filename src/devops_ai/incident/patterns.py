@@ -96,9 +96,43 @@ RE_OOM_KERNEL = re.compile(
     r"(?i)(out of memory: kill process|invoked oom-killer|oom_reaper|oom-kill|killed process \d+ \([^)]+\) total-vm:\d+kB)"
 )
 RE_SIGKILL_EXIT = re.compile(r"(?i)(exit(?:ed)?\s*\(137\)|exit code 137|code[:\s]+137)")
-RE_DB_CONN_REFUSED = re.compile(
-    r"(?i)(connection refused|econnrefused|psycopg2\.operationalerror|could not connect to server|dial tcp [^:]+:\d+: connect: connection refused|connection to [^ ]+ failed)"
+
+# Database driver exceptions and specific error signatures
+RE_DB_DRIVERS = re.compile(
+    r"(?i)("
+    r"psycopg2(?:\.operationalerror)?|"
+    r"asyncpg(?:\.exceptions)?|"
+    r"pymysql(?:\.err)?(?:\.operationalerror)?|"
+    r"mysqlclient|"
+    r"mysql_exceptions|"
+    r"error 2003 \(hy000\): can't connect to mysql server|"
+    r"redis(?:\.exceptions)?\.(?:connectionerror|timeouterror)|"
+    r"pymongo(?:\.errors)?\.(?:serverselectiontimeouterror|autoreconnect|networktimeout)|"
+    r"sqlalchemy\.exc\.(?:operationalerror|databaseerror)|"
+    r"could not connect to server: connection refused"
+    r")"
 )
+
+# Database ports and technology names
+RE_DB_PORT_OR_TECH = re.compile(
+    r"(?i)("
+    r":(?:5432|3306|6379|27017)\b|"
+    r"\b(?:postgres|postgresql|mysql|mariadb|redis|mongodb|mongo|database|db)\b"
+    r")"
+)
+
+# Connection failure phrases
+RE_CONN_REFUSED_OR_FAILED = re.compile(
+    r"(?i)("
+    r"connection refused|"
+    r"econnrefused|"
+    r"connect: connection refused|"
+    r"failed to connect to (?:server|database|host|instance)|"
+    r"error \d+ connecting to [^:\s]+:(?:5432|3306|6379|27017)|"
+    r"could not connect to server"
+    r")"
+)
+
 RE_CRASH_LOOP = re.compile(r"(?i)(crashloopbackoff|back-off \d+s restarting failed container)")
 RE_IMAGE_PULL = re.compile(
     r"(?i)(imagepullbackoff|errimagepull|failed to pull image|image inspect error|unauthorized: authentication required)"
@@ -106,8 +140,47 @@ RE_IMAGE_PULL = re.compile(
 RE_UPSTREAM_TIMEOUT = re.compile(
     r"(?i)(request timeout|gateway timeout|timed out after|deadline exceeded|504 gateway time-out|upstream request timeout)"
 )
+
+# LLM provider specific context and terms
+RE_LLM_CONTEXT = re.compile(
+    r"(?i)\b("
+    r"gemini|"
+    r"ollama|"
+    r"openai|"
+    r"anthropic|"
+    r"bedrock|"
+    r"vertex|"
+    r"llm|"
+    r"ai-agent|"
+    r"model-api|"
+    r"model_quota|"
+    r"tokens?[_ -]?per[_ -]?minute|"
+    r"requests?[_ -]?per[_ -]?minute|"
+    r"tpm|"
+    r"rpm|"
+    r"token[_ ]?limit|"
+    r"resource_exhausted|"
+    r"quota_exhausted|"
+    r"generativeai"
+    r")\b"
+)
+
 RE_LLM_RATE_LIMIT = re.compile(
-    r"(?i)(429 too many requests|rate limit exceeded|quota exceeded|resource_exhausted|tpm limit|rpm limit)"
+    r"(?i)(429 too many requests|rate limit exceeded|quota exceeded|resource_exhausted|tpm limit|rpm limit|tokens per minute|requests per minute)"
+)
+
+# Generic web / proxy rate limit terms (for excluding ordinary HTTP 429)
+RE_GENERIC_WEB_RATE_LIMIT = re.compile(
+    r"(?i)\b("
+    r"nginx|"
+    r"ingress|"
+    r"client ip|"
+    r"client-facing|"
+    r"api-gateway|"
+    r"haproxy|"
+    r"envoy|"
+    r"upstream client"
+    r")\b"
 )
 
 
@@ -347,16 +420,57 @@ class FailurePatternCatalog:
         evidence: CorrelatedEvidence,
         text_entries: List[tuple[str, str]],
     ) -> Optional[PatternMatchResult]:
-        """Detect Kubernetes CrashLoopBackOff."""
+        """Detect Kubernetes CrashLoopBackOff.
+
+        Requires explicit CrashLoopBackOff reason/message OR a restart count >= 3 WITH
+        an active failure indicator (non-zero exit code, Waiting/Terminated failure status).
+        A healthy Running pod with historical restarts and exit code 0 must NOT trigger.
+        """
         matched_refs: List[str] = []
         supporting: List[str] = []
+
+        # Check container_states for active failure indicators
+        has_active_failure = False
+        for cs in evidence.container_states:
+            status = str(cs.get("status") or "").lower()
+            exit_code = cs.get("exit_code")
+            reason = str(cs.get("reason") or "").lower()
+            if (
+                exit_code not in (None, 0)
+                or status in ("waiting", "terminated", "failed")
+                or "crash" in reason
+            ):
+                has_active_failure = True
 
         for k8s in evidence.k8s_events:
             msg = str(k8s.get("message") or "")
             reason = str(k8s.get("reason") or "")
-            restarts = k8s.get("restarts", 0)
-            if RE_CRASH_LOOP.search(msg) or RE_CRASH_LOOP.search(reason) or restarts >= 3:
-                supporting.append(f"Pod reporting crash loop: {reason} ({restarts} restarts)")
+            status = str(k8s.get("status") or "").lower()
+            exit_code = k8s.get("exit_code")
+            restarts = int(k8s.get("restarts") or 0)
+
+            is_explicit_clb = bool(RE_CRASH_LOOP.search(msg) or RE_CRASH_LOOP.search(reason))
+            k8s_has_error = (
+                is_explicit_clb
+                or (exit_code not in (None, 0))
+                or (status in ("waiting", "terminated", "failed") and status != "running")
+                or any(err in reason.lower() for err in ("error", "crash", "failed"))
+            )
+            if k8s_has_error:
+                has_active_failure = True
+
+            if is_explicit_clb:
+                supporting.append(
+                    f"Kubernetes CrashLoopBackOff event: {reason} - {msg} ({restarts} restarts)"
+                )
+            elif restarts >= 3 and has_active_failure and status != "running":
+                supporting.append(
+                    f"Pod restarting repeatedly ({restarts} restarts) with active failure: reason={reason}, status={status}"
+                )
+            elif restarts >= 3 and has_active_failure and exit_code not in (None, 0):
+                supporting.append(
+                    f"Pod restarting repeatedly ({restarts} restarts) with failed exit code {exit_code}"
+                )
 
         for eid, text in text_entries:
             if RE_CRASH_LOOP.search(text):
@@ -453,15 +567,27 @@ class FailurePatternCatalog:
         evidence: CorrelatedEvidence,
         text_entries: List[tuple[str, str]],
     ) -> Optional[PatternMatchResult]:
-        """Detect database ConnectionRefused failure pattern."""
+        """Detect database ConnectionRefused failure pattern.
+
+        Requires recognized database driver exceptions or database port/component context
+        combined with connection failure phrases. Generic HTTP/API failures (e.g. Stripe, Auth0)
+        are strictly excluded.
+        """
         matched_refs: List[str] = []
         supporting: List[str] = []
         contradicting: List[str] = []
 
+        # Check if any alert is associated with a database component
+        has_db_alert_comp = any(bool(RE_DB_PORT_OR_TECH.search(a.component)) for a in alerts)
+
         for eid, text in text_entries:
-            if RE_DB_CONN_REFUSED.search(text):
+            has_db_driver = bool(RE_DB_DRIVERS.search(text))
+            has_db_context = bool(RE_DB_PORT_OR_TECH.search(text)) or has_db_alert_comp
+            has_conn_failure = bool(RE_CONN_REFUSED_OR_FAILED.search(text))
+
+            if has_db_driver or (has_db_context and has_conn_failure):
                 matched_refs.append(eid)
-                supporting.append(f"Connection refused pattern matched in [{eid}]")
+                supporting.append(f"Database connection failure pattern matched in [{eid}]")
 
         if not matched_refs:
             return None
@@ -751,19 +877,47 @@ class FailurePatternCatalog:
         evidence: CorrelatedEvidence,
         text_entries: List[tuple[str, str]],
     ) -> Optional[PatternMatchResult]:
-        """Detect LLM provider rate limiting (HTTP 429 / Quota Exhaustion)."""
+        """Detect LLM provider rate limiting (HTTP 429 / Quota Exhaustion).
+
+        Requires explicit LLM provider or model context (e.g., Gemini, Ollama, OpenAI,
+        TPM/RPM limits, model quota). Ordinary Nginx, ingress, or generic client-facing HTTP 429
+        responses are strictly excluded.
+        """
         matched_refs: List[str] = []
         supporting: List[str] = []
 
+        # Check if alerts have LLM component or provider context
+        has_llm_component = any(
+            bool(RE_LLM_CONTEXT.search(a.component)) or bool(RE_LLM_CONTEXT.search(str(a.raw_data)))
+            for a in alerts
+        )
+
         for eid, text in text_entries:
-            if RE_LLM_RATE_LIMIT.search(text):
+            has_rate_phrase = bool(RE_LLM_RATE_LIMIT.search(text))
+            has_llm_ctx = bool(RE_LLM_CONTEXT.search(text)) or has_llm_component
+            is_generic_web = bool(RE_GENERIC_WEB_RATE_LIMIT.search(text)) and not bool(
+                RE_LLM_CONTEXT.search(text)
+            )
+
+            if has_rate_phrase and has_llm_ctx and not is_generic_web:
                 matched_refs.append(eid)
-                supporting.append(f"Rate limiting error pattern matched in [{eid}]")
+                supporting.append(f"LLM rate limiting error pattern matched in [{eid}]")
 
         for a in alerts:
-            if a.source.value == "LOGS" and RE_LLM_RATE_LIMIT.search(a.message):
-                matched_refs.append(f"EVID-ALERT-{a.alert_id}")
-                supporting.append(f"LLM provider returned rate limit / quota error: {a.message}")
+            if a.source.value == "LOGS":
+                has_rate_phrase = bool(RE_LLM_RATE_LIMIT.search(a.message))
+                has_llm_ctx = bool(RE_LLM_CONTEXT.search(a.message)) or bool(
+                    RE_LLM_CONTEXT.search(a.component)
+                )
+                is_generic_web = bool(RE_GENERIC_WEB_RATE_LIMIT.search(a.message)) and not bool(
+                    RE_LLM_CONTEXT.search(a.message)
+                )
+
+                if has_rate_phrase and has_llm_ctx and not is_generic_web:
+                    matched_refs.append(f"EVID-ALERT-{a.alert_id}")
+                    supporting.append(
+                        f"LLM provider returned rate limit / quota error: {a.message}"
+                    )
 
         if not matched_refs:
             return None

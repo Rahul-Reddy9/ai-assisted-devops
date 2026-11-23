@@ -265,3 +265,91 @@ def test_analyzer_offline_execution_without_llm():
     assert duration < 0.20
     assert analyzed.root_cause is not None
     assert analyzed.root_cause.title == "Kubernetes ImagePullBackOff or Image Pull Failure"
+
+
+# --- Audit Finding F-07 Tests: Unsupported Hypothesis Confidence Capping ---
+
+
+def test_f07_unsupported_hypothesis_confidence_capped_at_030():
+    """Verify hypotheses with missing or all-invalid evidence references are marked unsupported and capped at <= 0.30."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    alert = _make_alert("ALT-PULL", AlertSource.KUBERNETES, "frontend", "Image pull failed")
+
+    # 1. All references invalid (e.g. pattern references do not exist in catalog or alerts)
+    inc_invalid_refs = Incident(
+        incident_id="INC-UNSUPPORTED-1",
+        version=1,
+        title="Unsupported Hypothesis Test",
+        category=Category.UNKNOWN,
+        severity=Severity.HIGH,
+        status=IncidentStatus.CORRELATED,
+        created_at=now,
+        updated_at=now,
+        alerts=[alert],
+        components_affected=["frontend"],
+        evidence=CorrelatedEvidence(
+            # Notice evidence_catalog is empty, but k8s_events triggers ImagePullBackOff pattern
+            evidence_catalog={},
+            k8s_events=[
+                {"reason": "ImagePullBackOff", "message": "Failed to pull image registry/frontend"}
+            ],
+        ),
+    )
+
+    analyzer = IncidentAnalyzer()
+    analyzed = analyzer.analyze(inc_invalid_refs)
+
+    rc = analyzed.root_cause
+    assert rc is not None
+    # No evidence references exist in catalog or alerts matching pattern refs
+    # Thus is_unsupported must be True
+    assert rc.is_unsupported is True
+    # Confidence MUST be capped at <= 0.30
+    assert rc.confidence <= 0.30
+    assert rc.is_confirmed is False
+    # Tier 2 escalation MUST be triggered
+    assert analyzed.metadata.get("escalate_to_tier_2") is True
+    reasons = analyzed.metadata.get("escalation_reasons", [])
+    assert any("unsupported" in r.lower() or "threshold" in r.lower() for r in reasons)
+
+    # Diagnostic metadata must preserve original uncapped score and record reason
+    cb = analyzed.metadata.get("confidence_breakdown", {})
+    assert cb.get("is_unsupported") is True
+    assert cb.get("uncapped_score", 0.0) >= 0.85
+    assert cb.get("final_score") <= 0.30
+    assert "capped at 0.30" in cb.get("capped_reason", "")
+
+
+def test_f07_partially_valid_references_retain_normal_confidence():
+    """Verify hypotheses with at least one valid evidence reference are supported and NOT capped."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    alert = _make_alert("ALT-PULL", AlertSource.KUBERNETES, "frontend", "ImagePullBackOff detected")
+
+    inc_valid = Incident(
+        incident_id="INC-SUPPORTED-1",
+        version=1,
+        title="Supported Hypothesis Test",
+        category=Category.UNKNOWN,
+        severity=Severity.HIGH,
+        status=IncidentStatus.CORRELATED,
+        created_at=now,
+        updated_at=now,
+        alerts=[alert],
+        components_affected=["frontend"],
+        evidence=CorrelatedEvidence(
+            evidence_catalog={
+                "EVID-K8S-01": "Failed to pull image registry/frontend:v2: ImagePullBackOff"
+            },
+            k8s_events=[{"reason": "ImagePullBackOff"}],
+        ),
+    )
+
+    analyzer = IncidentAnalyzer()
+    analyzed = analyzer.analyze(inc_valid)
+
+    rc = analyzed.root_cause
+    assert rc is not None
+    assert rc.is_unsupported is False
+    assert rc.confidence >= 0.85
+    assert rc.is_confirmed is True
+    assert "EVID-K8S-01" in rc.evidence_refs
