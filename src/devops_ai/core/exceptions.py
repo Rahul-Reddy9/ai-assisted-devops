@@ -35,3 +35,38 @@ class ObservabilityError(DevOpsAIError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, code="OBSERVABILITY_ERROR")
+
+
+class IncidentError(DevOpsAIError):
+    """Raised when an incident operation fails."""
+
+    def __init__(self, message: str, code: str = "INCIDENT_ERROR") -> None:
+        super().__init__(message, code=code)
+
+
+class IncidentNotFoundError(IncidentError):
+    """Raised when a requested incident cannot be located."""
+
+    def __init__(self, incident_id: str) -> None:
+        super().__init__(f"Incident not found: '{incident_id}'", code="INCIDENT_NOT_FOUND")
+        self.incident_id = incident_id
+
+
+class ConcurrencyConflictError(IncidentError):
+    """Raised when an optimistic concurrency version conflict occurs during repository update."""
+
+    def __init__(self, incident_id: str, expected: int, actual: int) -> None:
+        super().__init__(
+            f"Concurrency conflict for incident '{incident_id}': expected version {expected}, found {actual}",
+            code="CONCURRENCY_CONFLICT",
+        )
+        self.incident_id = incident_id
+        self.expected = expected
+        self.actual = actual
+
+
+class RepositoryLockError(IncidentError):
+    """Raised when the repository file lock cannot be acquired or broken safely."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="REPOSITORY_LOCK_ERROR")

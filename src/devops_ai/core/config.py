@@ -61,6 +61,52 @@ class Settings(BaseSettings):
     burst_threshold: int = Field(default=3, ge=1)
     burst_window_seconds: int = Field(default=30, ge=5)
 
+    # Incident Management & Analysis Configuration (Phase 4)
+    incident_storage_dir: str = Field(
+        default=".devops_ai/incidents",
+        description="Local directory for incident repository persistence",
+    )
+    incident_dedup_cooldown_seconds: int = Field(
+        default=300,
+        ge=10,
+        le=86400,
+        description="Deduplication cooldown window in seconds for identical alert fingerprints",
+    )
+    incident_reopen_window_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=604800,
+        description="Window in seconds during which recurring alerts will reopen a resolved incident",
+    )
+    incident_correlation_window_seconds: int = Field(
+        default=300,
+        ge=10,
+        le=86400,
+        description="Temporal correlation sliding window in seconds",
+    )
+    incident_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Retention period in days for closed incidents before archiving/pruning",
+    )
+    incident_max_records: int = Field(
+        default=1000,
+        ge=10,
+        le=100000,
+        description="Maximum active/persisted incidents retained in primary store",
+    )
+    rca_confidence_threshold: float = Field(
+        default=0.85,
+        ge=0.1,
+        le=1.0,
+        description="Confidence threshold below which Tier 2 AI investigation is triggered",
+    )
+    rca_auto_tier2: bool = Field(
+        default=False,
+        description="Automatically escalate to Tier 2 AI investigation when confidence is below threshold",
+    )
+
     @field_validator("ollama_host")
     @classmethod
     def validate_ollama_host(cls, v: str) -> str:

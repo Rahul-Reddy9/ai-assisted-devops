@@ -94,6 +94,36 @@ SYSTEM_MEMORY_GAUGE = Gauge(
     registry=METRICS_REGISTRY,
 )
 
+# Phase 4 Incident Metrics
+INCIDENTS_DETECTED_COUNTER = Counter(
+    "devops_ai_incidents_detected_total",
+    "Total incidents detected by severity and category",
+    ["severity", "category"],
+    registry=METRICS_REGISTRY,
+)
+
+RCA_EXECUTIONS_COUNTER = Counter(
+    "devops_ai_rca_executions_total",
+    "Total RCA investigations executed by tier and status",
+    ["tier", "status"],
+    registry=METRICS_REGISTRY,
+)
+
+RCA_DURATION_HISTOGRAM = Histogram(
+    "devops_ai_rca_duration_seconds",
+    "Latency of root cause analysis pipeline in seconds",
+    ["tier"],
+    buckets=[0.05, 0.25, 1.0, 2.5, 5.0, 10.0, 30.0],
+    registry=METRICS_REGISTRY,
+)
+
+ACTIVE_INCIDENTS_GAUGE = Gauge(
+    "devops_ai_active_incidents",
+    "Current active unresolved incidents count by severity",
+    ["severity"],
+    registry=METRICS_REGISTRY,
+)
+
 
 class MetricsCache:
     """Thread-safe cached metrics exposition to avoid blocking on Prometheus scrapes."""
@@ -198,6 +228,39 @@ def record_docker_status(is_available: bool) -> None:
 def record_k8s_status(is_available: bool) -> None:
     """Update Kubernetes cluster availability gauge (1.0 = available, 0.0 = unavailable)."""
     K8S_AVAILABLE_GAUGE.set(1.0 if is_available else 0.0)
+
+
+def record_incident_detected(severity: str, category: str) -> None:
+    """Increment counter for detected incidents with low-cardinality labels."""
+    safe_sev = (
+        severity.upper()
+        if severity.upper() in ("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL")
+        else "MEDIUM"
+    )
+    safe_cat = (
+        category.upper()
+        if category.upper()
+        in ("INFRASTRUCTURE", "CONTAINER", "APPLICATION", "NETWORK", "PROVIDER", "UNKNOWN")
+        else "UNKNOWN"
+    )
+    INCIDENTS_DETECTED_COUNTER.labels(severity=safe_sev, category=safe_cat).inc()
+
+
+def record_rca_execution(tier: str, status: str, duration_seconds: Optional[float] = None) -> None:
+    """Record root cause analysis execution and latency."""
+    safe_tier = tier.lower() if tier.lower() in ("tier_1", "tier_2") else "tier_1"
+    safe_status = (
+        status.lower() if status.lower() in ("success", "failure", "fallback") else "success"
+    )
+    RCA_EXECUTIONS_COUNTER.labels(tier=safe_tier, status=safe_status).inc()
+    if duration_seconds is not None:
+        RCA_DURATION_HISTOGRAM.labels(tier=safe_tier).observe(max(0.0, duration_seconds))
+
+
+def record_active_incidents(counts_by_severity: dict[str, int]) -> None:
+    """Update gauge tracking unresolved incidents by severity."""
+    for sev in ("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"):
+        ACTIVE_INCIDENTS_GAUGE.labels(severity=sev).set(float(counts_by_severity.get(sev, 0)))
 
 
 def get_prometheus_exposition(force_refresh: bool = False) -> bytes:
