@@ -4,13 +4,11 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import datetime
-import os
-import time
 import pytest
 
 from devops_ai.core.exceptions import ConcurrencyConflictError
 from devops_ai.incident.models import Category, Incident, IncidentStatus, Severity
-from devops_ai.incident.repository import IncidentRepository, _is_pid_alive
+from devops_ai.incident.repository import IncidentRepository
 
 
 def test_repository_save_and_retrieve(tmp_path):
@@ -139,37 +137,71 @@ def test_concurrent_multithreaded_writes(tmp_path):
     assert len(all_incidents) == 10
 
 
-def test_incomplete_stale_lock_recovery(tmp_path):
-    """Verify repository safely recovers when an incomplete/empty lock file is older than 5s."""
+def test_persistent_lock_file_remains_on_disk(tmp_path):
+    """Verify that the OS lock file persists on disk and is never unlinked on release."""
     repo = IncidentRepository(storage_dir=tmp_path)
-
-    # Create an abandoned empty lock file with old mtime
-    repo.lock_file.write_text("", encoding="utf-8")
-    old_time = time.time() - 10.0
-    os.utime(repo.lock_file, (old_time, old_time))
-
     now = datetime.datetime.now(datetime.timezone.utc)
     inc = Incident(
-        incident_id="INC-LOCK-001",
+        incident_id="INC-PERSIST-001",
         version=1,
-        title="Lock Recovery Test",
+        title="Lock Persistence Test",
         created_at=now,
         updated_at=now,
     )
 
-    # Saving must detect stale empty lock, evict it, and succeed
+    repo.save(inc)
+    assert repo.lock_file.exists(), "Lock file must exist on disk after save"
+
+    # Reading also acquires and releases the lock; lock file must still exist
+    retrieved = repo.get("INC-PERSIST-001")
+    assert retrieved is not None
+    assert repo.lock_file.exists(), "Lock file must persist and never be unlinked"
+
+
+def test_incomplete_metadata_does_not_break_acquisition(tmp_path):
+    """Verify repository safely acquires OS lock even if lock file metadata was incomplete."""
+    repo = IncidentRepository(storage_dir=tmp_path)
+
+    # Pre-create empty lock file
+    repo.lock_file.write_bytes(b" ")
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    inc = Incident(
+        incident_id="INC-INCOMPLETE-001",
+        version=1,
+        title="Incomplete Metadata Test",
+        created_at=now,
+        updated_at=now,
+    )
+
+    # Saving acquires OS lock, overwrites metadata at offset 1, and succeeds
     saved = repo.save(inc)
-    assert saved.incident_id == "INC-LOCK-001"
+    assert saved.incident_id == "INC-INCOMPLETE-001"
+    assert repo.lock_file.exists()
 
 
-def test_pid_liveness_check():
-    """Verify _is_pid_alive correctly identifies current process and nonexistent PID."""
-    current_pid = os.getpid()
-    assert _is_pid_alive(current_pid) is True
+def test_lock_timeout_raises_repository_lock_error(tmp_path):
+    """Verify RepositoryLockError is raised when lock cannot be acquired within timeout."""
+    from devops_ai.core.exceptions import RepositoryLockError
+    from devops_ai.incident.repository import _acquire_os_lock, _release_os_lock
 
-    # High PID unlikely to exist
-    nonexistent_pid = 99999999
-    assert _is_pid_alive(nonexistent_pid) is False
+    repo = IncidentRepository(storage_dir=tmp_path)
+    repo._ensure_lock_file_exists()
+
+    # Artificially hold the OS lock on a separate file descriptor
+    holder = open(repo.lock_file, "r+b")
+    assert _acquire_os_lock(holder.fileno()) is True
+
+    try:
+        with pytest.raises(RepositoryLockError) as exc_info:
+            # Short timeout should fail with descriptive error
+            with repo._file_lock(timeout=0.2):
+                pass
+
+        assert "Timed out after 0.2s" in str(exc_info.value)
+    finally:
+        _release_os_lock(holder.fileno())
+        holder.close()
 
 
 def test_retention_pruning(tmp_path):

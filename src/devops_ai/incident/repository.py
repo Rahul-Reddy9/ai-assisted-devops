@@ -39,37 +39,44 @@ def _get_process_create_time(pid: int) -> Optional[float]:
         return None
 
 
-def _is_pid_alive(pid: int, expected_create_time: Optional[float] = None) -> bool:
-    """Verify whether a process is currently running, accounting for PID reuse."""
-    try:
-        import psutil
+def _acquire_os_lock(fd: int) -> bool:
+    """Attempt non-blocking acquisition of OS-level advisory lock on file descriptor."""
+    if os.name == "nt":
+        import msvcrt
 
-        if not psutil.pid_exists(pid):
-            return False
-        if expected_create_time is not None:
-            try:
-                proc = psutil.Process(pid)
-                # If creation times differ by more than 2 seconds, the PID was reused
-                if abs(proc.create_time() - expected_create_time) > 2.0:
-                    return False
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                return False
-        return True
-    except ImportError:
-        if os.name == "nt":
-            import ctypes
-
-            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-            if handle == 0:
-                return False
-            ctypes.windll.kernel32.CloseHandle(handle)
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return True
-        else:
-            try:
-                os.kill(pid, 0)
-                return True
-            except OSError:
-                return False
+        except (OSError, PermissionError):
+            return False
+    else:
+        import fcntl
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except (BlockingIOError, OSError):
+            return False
+
+
+def _release_os_lock(fd: int) -> None:
+    """Release OS-level advisory lock on file descriptor."""
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except (OSError, PermissionError):
+            pass
+    else:
+        import fcntl
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
 
 
 class IncidentRepository:
@@ -88,98 +95,103 @@ class IncidentRepository:
         self._retention_days = settings.incident_retention_days
         self._max_records = settings.incident_max_records
 
+    def _ensure_lock_file_exists(self) -> None:
+        """Ensure the persistent lock file exists with at least 1 byte for byte-range locking."""
+        if not self.lock_file.exists():
+            try:
+                with open(self.lock_file, "a+b") as f:
+                    if f.tell() == 0:
+                        f.write(b" ")
+                        f.flush()
+                        os.fsync(f.fileno())
+            except OSError:
+                pass
+
     @contextmanager
     def _file_lock(self, timeout: float = 5.0) -> Generator[str, None, None]:
-        """Cross-platform advisory file lock acquisition with PID verification."""
+        """Cross-process advisory OS-level lock (msvcrt on Windows, fcntl on Linux).
+
+        The lock file is persistent and NEVER unlinked. Mutual exclusion is enforced
+        exclusively by the OS kernel, which automatically frees the lock on process termination.
+        """
+        self._ensure_lock_file_exists()
+
         token = str(uuid.uuid4())
-        hostname = socket.gethostname()
         pid = os.getpid()
+        hostname = socket.gethostname()
         create_time = _get_process_create_time(pid)
 
-        payload = {
-            "pid": pid,
-            "create_time": create_time,
-            "hostname": hostname,
-            "token": token,
-            "acquired_at": time.time(),
-        }
-
         start_time = time.monotonic()
+        lock_file_handle = None
         acquired = False
 
         while not acquired:
             try:
-                # Atomic creation primitive on both Windows and POSIX (O_CREAT | O_EXCL)
-                with open(self.lock_file, "x", encoding="utf-8") as f:
-                    json.dump(payload, f)
-                    f.flush()
-                    os.fsync(f.fileno())
-                acquired = True
-            except FileExistsError:
-                # Inspect existing lock for staleness or dead owning process
+                # Open in read-write binary mode without truncating
+                lock_file_handle = open(self.lock_file, "r+b")
+                if _acquire_os_lock(lock_file_handle.fileno()):
+                    acquired = True
+                    # Write diagnostic metadata (offset 1 onwards, leaving lock byte 0 intact)
+                    try:
+                        payload = json.dumps(
+                            {
+                                "pid": pid,
+                                "create_time": create_time,
+                                "hostname": hostname,
+                                "token": token,
+                                "acquired_at": time.time(),
+                            }
+                        ).encode("utf-8")
+                        lock_file_handle.seek(1)
+                        lock_file_handle.write(payload)
+                        lock_file_handle.truncate()
+                        lock_file_handle.flush()
+                    except Exception as meta_err:
+                        logger.debug(
+                            f"Failed to write diagnostic lock metadata (non-fatal): {meta_err}"
+                        )
+                    break
+                else:
+                    lock_file_handle.close()
+                    lock_file_handle = None
+            except OSError:
+                if lock_file_handle:
+                    try:
+                        lock_file_handle.close()
+                    except OSError:
+                        pass
+                    lock_file_handle = None
+
+            if time.monotonic() - start_time >= timeout:
+                diag_info = ""
                 try:
-                    is_stale = False
                     if self.lock_file.exists():
-                        try:
-                            content = self.lock_file.read_text(encoding="utf-8").strip()
-                            if not content:
-                                # Incomplete write: check mtime
-                                mtime = self.lock_file.stat().st_mtime
-                                if (time.time() - mtime) > 5.0:
-                                    is_stale = True
-                            else:
-                                lock_data = json.loads(content)
-                                lock_pid = lock_data.get("pid")
-                                lock_time = lock_data.get("create_time")
-                                lock_host = lock_data.get("hostname")
-
-                                # Check process liveness if on the same host
-                                if lock_host == hostname and isinstance(lock_pid, int):
-                                    if not _is_pid_alive(lock_pid, lock_time):
-                                        logger.warning(
-                                            f"Breaking stale repository lock: owning PID {lock_pid} is dead."
-                                        )
-                                        is_stale = True
-                                elif (time.time() - lock_data.get("acquired_at", 0)) > 60.0:
-                                    # Fallback for locks from inaccessible hosts older than 60s
-                                    is_stale = True
-                        except (json.JSONDecodeError, OSError):
-                            mtime = self.lock_file.stat().st_mtime
-                            if (time.time() - mtime) > 5.0:
-                                is_stale = True
-
-                    if is_stale:
-                        try:
-                            self.lock_file.unlink(missing_ok=True)
-                            continue
-                        except OSError:
-                            pass
-                except OSError:
+                        with open(self.lock_file, "rb") as mf:
+                            mf.seek(1)
+                            meta_bytes = mf.read()
+                            if meta_bytes:
+                                meta_obj = json.loads(meta_bytes.decode("utf-8"))
+                                diag_info = f" (held by PID {meta_obj.get('pid')} on {meta_obj.get('hostname')})"
+                except Exception:
                     pass
 
-                if time.monotonic() - start_time >= timeout:
-                    raise RepositoryLockError(
-                        f"Timed out after {timeout:.1f}s waiting for repository lock at '{self.lock_file}'"
-                    ) from None
+                raise RepositoryLockError(
+                    f"Timed out after {timeout:.1f}s waiting for repository OS lock at '{self.lock_file}'{diag_info}"
+                ) from None
 
-                # Sleep with random jitter to avoid thundering herd problem
-                time.sleep(random.uniform(0.05, 0.15))
+            time.sleep(random.uniform(0.02, 0.08))
 
         try:
             yield token
         finally:
-            try:
-                if self.lock_file.exists():
+            if lock_file_handle:
+                try:
+                    _release_os_lock(lock_file_handle.fileno())
+                finally:
                     try:
-                        content = self.lock_file.read_text(encoding="utf-8").strip()
-                        if content:
-                            stored = json.loads(content)
-                            if stored.get("token") == token:
-                                self.lock_file.unlink(missing_ok=True)
-                    except (json.JSONDecodeError, OSError):
+                        lock_file_handle.close()
+                    except OSError:
                         pass
-            except Exception as e:
-                logger.debug(f"Failed to release file lock cleanly: {e}")
 
     def _read_data_unlocked(self) -> Dict[str, Dict[str, Any]]:
         """Read and validate incident dictionary from disk with backup recovery."""
