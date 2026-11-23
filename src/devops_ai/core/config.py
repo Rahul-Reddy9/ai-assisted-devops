@@ -106,6 +106,20 @@ class Settings(BaseSettings):
         default=False,
         description="Automatically escalate to Tier 2 AI investigation when confidence is below threshold",
     )
+    rca_ai_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=300.0,
+        description="Timeout in seconds for Tier 2 AI investigation",
+    )
+    rca_ai_provider: Optional[str] = Field(
+        default=None,
+        description="Optional override provider for Tier 2 AI investigation",
+    )
+    rca_ai_model: Optional[str] = Field(
+        default=None,
+        description="Optional override model identifier for Tier 2 AI investigation",
+    )
 
     @field_validator("ollama_host")
     @classmethod

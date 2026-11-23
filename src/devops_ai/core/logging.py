@@ -106,3 +106,8 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
     if name:
         return logging.getLogger(f"devops_ai.{name}")
     return logging.getLogger("devops_ai")
+
+
+def scrub_secrets(text: str) -> str:
+    """Public helper to redact API keys, tokens, and passwords from arbitrary strings."""
+    return _scrub_secrets(text)

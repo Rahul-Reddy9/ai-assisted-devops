@@ -9,6 +9,7 @@ from devops_ai.incident.adapters import (
     LogIngestionAdapter,
     MetricsAdapter,
 )
+from devops_ai.incident.ai_engine import AIEngineResponse, Tier2AIEngine
 from devops_ai.incident.analyzer import IncidentAnalyzer
 from devops_ai.incident.classifier import ClassificationResult, IncidentClassifier
 from devops_ai.incident.correlator import IncidentCorrelator
@@ -32,9 +33,11 @@ from devops_ai.incident.patterns import (
     PatternMatchResult,
     calculate_evidence_confidence,
 )
+from devops_ai.incident.remediation import RemediationAdvisor
 from devops_ai.incident.repository import IncidentRepository
 
 __all__ = [
+    "AIEngineResponse",
     "Alert",
     "AlertSource",
     "Category",
@@ -56,9 +59,11 @@ __all__ = [
     "MetricsAdapter",
     "PatternMatchResult",
     "RemediationAction",
+    "RemediationAdvisor",
     "RiskLevel",
     "RootCauseHypothesis",
     "Severity",
+    "Tier2AIEngine",
     "TimelineEntry",
     "calculate_evidence_confidence",
 ]

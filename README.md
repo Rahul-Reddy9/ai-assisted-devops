@@ -148,6 +148,51 @@ To launch Prometheus and Grafana locally with automated dashboard provisioning, 
 
 ---
 
+---
+
+## Incident Analysis & Two-Tier Investigation
+
+DevOps AI provides an autonomous two-tier incident investigation and remediation platform designed for production site reliability engineering.
+
+### Two-Tier Architecture & Orchestration
+1. **Tier 1 — Deterministic Analysis (100% Offline):**
+   - Ingests alerts across logs, metrics, container states, health probes, and Kubernetes events.
+   - Evaluates deterministic failure patterns (Confirmed OOMKilled vs Ambiguous SIGKILL, CrashLoopBackOff, ImagePullBackOff, Database Connection Refused, CPU Throttling, Memory Saturation, Readiness Probe Failures, and LLM Rate Limiting).
+   - Calculates bounded mathematical evidence confidence:
+     $$\text{Confidence} = \text{clamp}\left((S_{\text{base}} \times W_{\text{source}}) + S_{\text{corrob}} - P_{\text{contradict}}, 0.0, 1.0\right)$$
+   - Executes in milliseconds entirely offline without LLM dependencies.
+
+2. **Tier 2 — AI-Assisted Semantic Investigation:**
+   - Evaluates deep semantic context using local Ollama models or hosted Google Gemini with automated fallback.
+   - Automatically escalates when deterministic criteria require deep investigation:
+     - Top hypothesis confidence below threshold (`< 0.85`).
+     - Application or unknown category incidents.
+     - Ambiguous competing hypotheses with delta $< 0.15$.
+     - Top hypothesis is unsupported by catalog citations.
+   - Preserves deterministic Tier 1 findings if Tier 2 fails, times out, or produces ungrounded output.
+
+### Evidence Grounding & Confidence Provenance
+- **Evidence Verification:** Every hypothesis must cite verifiable evidence references (`EVID-*`) present in the incident evidence catalog.
+- **Hallucination Rejection:** Unknown evidence IDs are automatically stripped and penalized.
+- **Unsupported Hypothesis Capping:** Hypotheses lacking verified supporting evidence citations are strictly marked `is_unsupported = True` and confidence is capped at $\le 0.30$.
+- **No LLM Confidence Inflation:** LLM self-reported confidence is never treated as calibrated probability. Final confidence is mathematically derived from verified evidence citations and corroborating signals.
+
+### Remediation Advisory & Safety Guard Rails
+- **Advisory Only:** Remediation actions are strictly advisory recommendations for human engineers. **Automated execution is completely disabled**; zero execution hooks exist in the codebase.
+- **Risk Classification:**
+  - `SAFE`: Read-only diagnostic and inspection commands (e.g. `kubectl logs`, `docker inspect`, `kubectl get events`).
+  - `MODERATE`: Workload-affecting mutating operations (e.g. `kubectl rollout restart`, `docker restart`, resource updates).
+  - `DANGEROUS`: Destructive, irreversible, or high-impact actions (e.g. `kubectl delete`, `rm -rf`, `DROP TABLE`, `kill -9`).
+- **Automated Guard Rails:** Destructive commands are scanned by deterministic safety classifiers and are **never** classified as `SAFE` or `MODERATE`. Every action includes human verification steps, preconditions, and rollback guidance.
+
+### Security & Prompt Injection Defense
+- All incident telemetry, logs, container output, and event messages are treated as **untrusted input**.
+- Evidence is isolated inside `<UNTRUSTED_INCIDENT_EVIDENCE>` XML delimiters in prompts.
+- Models are strictly instructed to treat evidence as passive data and ignore any embedded directives or instruction overrides.
+- Automated secret scrubbing sanitizes API keys, passwords, and bearer tokens across prompts, outputs, logs, and diagnostic metadata.
+
+---
+
 ## Security & Reliability Principles
 - **Read-Only Operations:** All container and Kubernetes monitoring commands operate in a strictly non-mutating manner. The suite never modifies, scales, restarts, or deletes running workloads.
 - **Zero-Hang Timeout Enforcement:** All network calls, health probes, Docker queries, and Kubernetes API requests enforce strict timeouts, ensuring commands never hang when external services or daemons are unreachable.

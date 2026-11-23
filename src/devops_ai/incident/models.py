@@ -127,10 +127,16 @@ class RemediationAction(BaseModel):
     action_id: str
     title: str
     description: str
-    action_type: Literal["immediate_mitigation", "permanent_fix", "diagnostic"]
+    action_type: Literal["immediate_mitigation", "permanent_fix", "diagnostic"] = "diagnostic"
     risk_level: RiskLevel
     command: Optional[str] = None
     verification_step: str
+    explanation: Optional[str] = None
+    root_cause_ref: Optional[str] = None
+    evidence_refs: List[str] = Field(default_factory=list)
+    preconditions: List[str] = Field(default_factory=list)
+    expected_result: Optional[str] = None
+    rollback_guidance: Optional[str] = None
     advisory_warning: str = (
         "ADVISORY ONLY: Must be executed manually by a human operator. "
         "Automated execution is strictly disabled."
