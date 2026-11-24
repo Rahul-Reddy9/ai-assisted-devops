@@ -16,6 +16,12 @@ from devops_ai.rag.embeddings import (
     OllamaEmbeddingProvider,
     get_embedding_provider,
 )
+from devops_ai.rag.evaluation import (
+    EvaluationDataset,
+    EvaluationQuery,
+    EvaluationReport,
+    RAGEvaluator,
+)
 from devops_ai.rag.extractors import (
     BaseExtractor,
     JSONExtractor,
@@ -56,6 +62,9 @@ __all__ = [
     "DocumentPreprocessor",
     "EmbeddingDimensionMismatchError",
     "EmbeddingProviderError",
+    "EvaluationDataset",
+    "EvaluationQuery",
+    "EvaluationReport",
     "IngestionResult",
     "IngestionStatus",
     "JSONExtractor",
@@ -64,6 +73,7 @@ __all__ = [
     "OllamaEmbeddingProvider",
     "PDFExtractor",
     "PlainTextExtractor",
+    "RAGEvaluator",
     "RAGRetriever",
     "RetrievalError",
     "RetrievalResult",

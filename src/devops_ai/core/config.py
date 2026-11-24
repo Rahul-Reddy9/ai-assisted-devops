@@ -217,6 +217,34 @@ class Settings(BaseSettings):
         description="Minimum similarity threshold for retrieval results",
     )
 
+    # RAG Evaluation and Observability Configuration (Phase 5 Commit 4)
+    rag_eval_default_k: List[int] = Field(
+        default=[1, 3, 5],
+        description="Default top-K cutoffs for retrieval quality evaluation",
+    )
+    rag_eval_dataset_path: Optional[str] = Field(
+        default=None,
+        description="Default filesystem path to RAG evaluation dataset file",
+    )
+    rag_eval_max_queries: int = Field(
+        default=500,
+        ge=1,
+        le=5000,
+        description="Maximum allowed queries per evaluation run to prevent runaway loops",
+    )
+    rag_eval_groundedness_overlap_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Minimum lexical evidence overlap threshold for grounded claims",
+    )
+    rag_eval_latency_warn_threshold_ms: float = Field(
+        default=500.0,
+        ge=10.0,
+        le=10000.0,
+        description="Query latency threshold in milliseconds to log warning",
+    )
+
     @field_validator("rag_embedding_provider")
     @classmethod
     def validate_embedding_provider(cls, v: str) -> str:

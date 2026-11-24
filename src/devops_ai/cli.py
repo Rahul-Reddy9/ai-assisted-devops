@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 import re
 import time
-from typing import Optional
+from typing import Dict, Optional
 
 from rich.console import Console
 from rich.markup import escape
@@ -21,6 +21,7 @@ from devops_ai import __version__
 from devops_ai.core.config import get_settings
 from devops_ai.core.exceptions import (
     ConcurrencyConflictError,
+    DatasetValidationError,
     DevOpsAIError,
     IncidentNotFoundError,
     RepositoryLockError,
@@ -50,6 +51,11 @@ from devops_ai.observability import (
     get_prometheus_exposition,
     record_log_anomaly,
 )
+from devops_ai.rag.evaluation import (
+    RAGEvaluator,
+    get_builtin_evaluation_dataset,
+    load_evaluation_dataset,
+)
 
 app = typer.Typer(
     name="devops-ai",
@@ -66,6 +72,9 @@ monitor_app = typer.Typer(name="monitor", help="Inspect container and Kubernetes
 incident_app = typer.Typer(
     name="incident", help="Autonomous incident investigation, lifecycle management, and RCA."
 )
+rag_app = typer.Typer(
+    name="rag", help="RAG document ingestion, semantic retrieval, and evaluation."
+)
 
 app.add_typer(generate_app)
 app.add_typer(provider_app)
@@ -73,6 +82,7 @@ app.add_typer(health_app)
 app.add_typer(metrics_app)
 app.add_typer(monitor_app)
 app.add_typer(incident_app)
+app.add_typer(rag_app)
 
 console = Console()
 
@@ -1381,6 +1391,308 @@ def incident_rca(
         safe_msg = escape(_sanitize_cli_text(str(e)))
         console.print(
             Panel(f"[bold red]Unexpected error: {safe_msg}[/bold red]", title="Fatal Error")
+        )
+        raise typer.Exit(code=1)
+
+
+# =====================================================================
+# RAG Subsystem CLI Commands (Phase 5 Commit 4)
+# =====================================================================
+
+
+@rag_app.command("evaluate")
+def evaluate_rag(
+    dataset_path: Optional[Path] = typer.Option(
+        None,
+        "--dataset",
+        "-d",
+        help="Path to JSON or YAML evaluation dataset file (defaults to built-in synthetic benchmark).",
+    ),
+    k_cutoffs: str = typer.Option(
+        "1,3,5",
+        "--k",
+        "-k",
+        help="Comma-separated list of top-K rank cutoffs to evaluate (e.g. '1,3,5').",
+    ),
+    output_path: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Path to write full JSON evaluation report.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output raw evaluation report as JSON to stdout.",
+    ),
+    min_precision: Optional[float] = typer.Option(
+        None,
+        "--min-precision",
+        help="Minimum acceptable mean Precision@K threshold (fails with exit code 1 if violated).",
+    ),
+    min_recall: Optional[float] = typer.Option(
+        None,
+        "--min-recall",
+        help="Minimum acceptable mean Recall@K threshold (fails with exit code 1 if violated).",
+    ),
+    min_mrr: Optional[float] = typer.Option(
+        None,
+        "--min-mrr",
+        help="Minimum acceptable Mean Reciprocal Rank threshold (fails with exit code 1 if violated).",
+    ),
+    min_ndcg: Optional[float] = typer.Option(
+        None,
+        "--min-ndcg",
+        help="Minimum acceptable mean nDCG@K threshold (fails with exit code 1 if violated).",
+    ),
+    max_latency_ms: Optional[float] = typer.Option(
+        None,
+        "--max-latency-ms",
+        help="Maximum allowable p95 total retrieval latency in milliseconds (fails with exit code 1 if exceeded).",
+    ),
+):
+    """Evaluate RAG semantic retrieval quality, answer grounding, and query latency."""
+    setup_logging(level="WARNING")
+    settings = get_settings()
+
+    # 1. Parse top-K cutoffs
+    try:
+        k_values = [int(x.strip()) for x in k_cutoffs.split(",") if x.strip()]
+        k_values = [k for k in k_values if k > 0]
+        if not k_values:
+            k_values = [1, 3, 5]
+    except Exception:
+        console.print(
+            "[bold red]Invalid --k format. Expected comma-separated integers, e.g. '1,3,5'[/bold red]"
+        )
+        raise typer.Exit(code=1)
+
+    # 2. Build quality thresholds map
+    thresholds: Dict[str, float] = {}
+    if min_precision is not None:
+        thresholds["min_precision"] = float(min_precision)
+    if min_recall is not None:
+        thresholds["min_recall"] = float(min_recall)
+    if min_mrr is not None:
+        thresholds["min_mrr"] = float(min_mrr)
+    if min_ndcg is not None:
+        thresholds["min_ndcg"] = float(min_ndcg)
+    if max_latency_ms is not None:
+        thresholds["max_latency_ms"] = float(max_latency_ms)
+
+    # 3. Load dataset
+    try:
+        if dataset_path:
+            dataset = load_evaluation_dataset(
+                dataset_path, max_queries=settings.rag_eval_max_queries
+            )
+        else:
+            dataset = get_builtin_evaluation_dataset()
+    except DatasetValidationError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Dataset Validation Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]Failed to load evaluation dataset: {safe_msg}[/bold red]",
+                title="Dataset Error",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 4. Execute evaluation
+    try:
+        evaluator = RAGEvaluator(settings=settings)
+        report = evaluator.evaluate_dataset(
+            dataset=dataset,
+            k_values=k_values,
+            quality_thresholds=thresholds,
+            raise_on_threshold_failure=False,
+        )
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(f"[bold red]Evaluation failed: {safe_msg}[/bold red]", title="Evaluation Error")
+        )
+        raise typer.Exit(code=1)
+
+    # 5. Save output if requested
+    if output_path:
+        try:
+            output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        except Exception as e:
+            safe_msg = escape(_sanitize_cli_text(str(e)))
+            console.print(
+                Panel(
+                    f"[bold red]Failed to write output file: {safe_msg}[/bold red]",
+                    title="IO Error",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    # 6. Output format: JSON or Rich Console
+    if json_output:
+        typer.echo(report.model_dump_json(indent=2))
+        if not report.passed_quality_gates:
+            raise typer.Exit(code=1)
+        return
+
+    # Rich human-readable output
+    console.print(
+        Panel(
+            f"[bold]Dataset ID:[/bold] {escape(report.dataset_id)}\n"
+            f"[bold]Dataset Name:[/bold] {escape(report.dataset_name)}\n"
+            f"[bold]Total Queries:[/bold] {report.total_queries}\n"
+            f"[bold]Evaluated Cutoffs (K):[/bold] {report.k_values}",
+            title="[bold cyan]RAG Retrieval Evaluation Benchmark[/bold cyan]",
+        )
+    )
+
+    # Table 1: Retrieval Quality Metrics
+    retrieval_table = Table(title="Retrieval Quality Metrics", show_header=True)
+    retrieval_table.add_column("Metric", style="bold cyan")
+    for k in report.k_values:
+        retrieval_table.add_column(f"k={k}", justify="right")
+    retrieval_table.add_column("Threshold", justify="right")
+    retrieval_table.add_column("Status", justify="center")
+
+    max_k = max(report.k_values)
+
+    # Precision row
+    p_cells = [
+        f"{report.mean_retrieval_metrics.precision_at_k.get(k, 0.0):.4f}" for k in report.k_values
+    ]
+    p_thresh = f">= {thresholds['min_precision']:.4f}" if "min_precision" in thresholds else "-"
+    p_status = (
+        "[bold green]PASS[/bold green]"
+        if (
+            "min_precision" not in thresholds
+            or report.mean_retrieval_metrics.precision_at_k.get(max_k, 0.0)
+            >= thresholds["min_precision"]
+        )
+        else "[bold red]FAIL[/bold red]"
+    )
+    retrieval_table.add_row("Precision@K", *p_cells, p_thresh, p_status)
+
+    # Recall row
+    r_cells = [
+        f"{report.mean_retrieval_metrics.recall_at_k.get(k, 0.0):.4f}" for k in report.k_values
+    ]
+    r_thresh = f">= {thresholds['min_recall']:.4f}" if "min_recall" in thresholds else "-"
+    r_status = (
+        "[bold green]PASS[/bold green]"
+        if (
+            "min_recall" not in thresholds
+            or report.mean_retrieval_metrics.recall_at_k.get(max_k, 0.0) >= thresholds["min_recall"]
+        )
+        else "[bold red]FAIL[/bold red]"
+    )
+    retrieval_table.add_row("Recall@K", *r_cells, r_thresh, r_status)
+
+    # MRR row
+    mrr_cells = [f"{report.mean_retrieval_metrics.mrr:.4f}"] + ["-" for _ in report.k_values[1:]]
+    mrr_thresh = f">= {thresholds['min_mrr']:.4f}" if "min_mrr" in thresholds else "-"
+    mrr_status = (
+        "[bold green]PASS[/bold green]"
+        if (
+            "min_mrr" not in thresholds
+            or report.mean_retrieval_metrics.mrr >= thresholds["min_mrr"]
+        )
+        else "[bold red]FAIL[/bold red]"
+    )
+    retrieval_table.add_row("MRR", *mrr_cells, mrr_thresh, mrr_status)
+
+    # nDCG row
+    ndcg_cells = [
+        f"{report.mean_retrieval_metrics.ndcg_at_k.get(k, 0.0):.4f}" for k in report.k_values
+    ]
+    ndcg_thresh = f">= {thresholds['min_ndcg']:.4f}" if "min_ndcg" in thresholds else "-"
+    ndcg_status = (
+        "[bold green]PASS[/bold green]"
+        if (
+            "min_ndcg" not in thresholds
+            or report.mean_retrieval_metrics.ndcg_at_k.get(max_k, 0.0) >= thresholds["min_ndcg"]
+        )
+        else "[bold red]FAIL[/bold red]"
+    )
+    retrieval_table.add_row("nDCG@K", *ndcg_cells, ndcg_thresh, ndcg_status)
+
+    console.print(retrieval_table)
+
+    # Table 2: Latency & Observability
+    lat_table = Table(title="Retrieval Latency Observability (ms)", show_header=True)
+    lat_table.add_column("Pipeline Stage", style="bold cyan")
+    lat_table.add_column("Mean", justify="right")
+    lat_table.add_column("p50", justify="right")
+    lat_table.add_column("p90", justify="right")
+    lat_table.add_column("p95", justify="right")
+    lat_table.add_column("p99", justify="right")
+    lat_table.add_column("Max", justify="right")
+
+    for name, dist in [
+        ("Query Embedding", report.latency_summary.embedding_latency),
+        ("Vector Search", report.latency_summary.search_latency),
+        ("Total Retrieval", report.latency_summary.total_latency),
+    ]:
+        lat_table.add_row(
+            name,
+            f"{dist.mean:.2f} ms",
+            f"{dist.p50:.2f} ms",
+            f"{dist.p90:.2f} ms",
+            f"{dist.p95:.2f} ms",
+            f"{dist.p99:.2f} ms",
+            f"{dist.max:.2f} ms",
+        )
+    console.print(lat_table)
+
+    # Table 3: Groundedness & Citations (if present)
+    if report.mean_groundedness_metrics:
+        gm = report.mean_groundedness_metrics
+        ground_table = Table(
+            title="Answer Grounding & Citation Verification (Proxy Heuristics)", show_header=True
+        )
+        ground_table.add_column("Metric / Property", style="bold cyan")
+        ground_table.add_column("Value", justify="right")
+
+        ground_table.add_row("Citation Coverage", f"{gm.citation_coverage * 100:.1f}%")
+        ground_table.add_row(
+            "Evidence Overlap Score (proxy)", f"{gm.evidence_overlap_score * 100:.1f}%"
+        )
+        ground_table.add_row("Total Claims Evaluated", str(gm.total_claims))
+        ground_table.add_row("Supported Claims", f"[green]{gm.supported_claims}[/green]")
+        ground_table.add_row(
+            "Unsupported Claims",
+            f"[yellow]{gm.unsupported_claims}[/yellow]" if gm.unsupported_claims > 0 else "0",
+        )
+        if gm.hallucinated_citations:
+            ground_table.add_row(
+                "Hallucinated Citations",
+                f"[red]{escape(', '.join(gm.hallucinated_citations))}[/red]",
+            )
+        else:
+            ground_table.add_row("Hallucinated Citations", "[green]None[/green]")
+        console.print(ground_table)
+
+    # Final Quality Gate Summary
+    if report.passed_quality_gates:
+        console.print(
+            Panel(
+                "[bold green]✓ All quality gate thresholds satisfied (Exit Code: 0)[/bold green]",
+                title="Quality Gates",
+            )
+        )
+    else:
+        failed_checks = [k for k, v in report.threshold_checks.items() if not v]
+        console.print(
+            Panel(
+                "[bold red]✗ Quality gate threshold violation(s):[/bold red]\n"
+                + "\n".join(f"  - {check}" for check in failed_checks)
+                + "\n\n[yellow]Failing with exit code 1[/yellow]",
+                title="[bold red]Quality Gates Failed[/bold red]",
+            )
         )
         raise typer.Exit(code=1)
 

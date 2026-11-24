@@ -13,6 +13,7 @@ DevOps AI is an enterprise-grade AI-assisted DevOps engineering suite designed t
 - **Autonomous AI Agent Architecture**: Extensible agent lifecycle (`BaseAgent`), multi-agent coordination (`AgentOrchestrator`), sequential pipelining with fact accumulation, broadcast routing, strict read-only safety boundary, and zero automated execution hooks.
 - **RAG Document Ingestion & Chunking**: Modular ingestion pipeline for Markdown, Plain Text, PDF, JSON, and YAML with structure-aware chunking, code block preservation, secret scrubbing, and deduplication.
 - **Vector Embeddings, Persistent Storage & Semantic Retrieval**: Pluggable embeddings (Ollama `nomic-embed-text`, deterministic offline Mock), persistent ChromaDB vector storage with cosine similarity conversion, provenance-preserving semantic retrieval, and agent grounding with untrusted context isolation.
+- **RAG Evaluation, Retrieval Quality & Observability**: Standard Information Retrieval metrics (Precision@K, Recall@K, MRR, nDCG@K), answer grounding and citation verification, decomposed query latency percentiles (embedding vs. search), built-in synthetic operational benchmark, and CLI quality gating for CI/CD pipelines.
 - **Turnkey Grafana Integration**: Pre-provisioned Grafana dashboards and Prometheus datasource configurations.
 - **Unified CLI**: Developer-friendly CLI built on Typer and Rich with error handling, markup escaping, and comprehensive credential redaction.
 
@@ -73,6 +74,11 @@ Key configuration settings:
 - `RAG_VECTOR_STORE_PATH`: Local storage path for ChromaDB persistence (default: `./data/vector_store`).
 - `RAG_RETRIEVAL_TOP_K`: Default top-K retrieved document chunks (default: `5`, range: 1–50).
 - `RAG_SIMILARITY_THRESHOLD`: Minimum cosine similarity score threshold (default: `0.5`, range: 0.0–1.0).
+- `RAG_EVAL_DEFAULT_K`: Default top-K rank cutoffs for retrieval evaluation (default: `[1, 3, 5]`).
+- `RAG_EVAL_DATASET_PATH`: Optional path to custom evaluation dataset JSON/YAML.
+- `RAG_EVAL_MAX_QUERIES`: Maximum allowed queries per evaluation run (default: `500`, range: 1–5000).
+- `RAG_EVAL_GROUNDEDNESS_OVERLAP_THRESHOLD`: Minimum lexical token containment threshold for grounded claims (default: `0.3`, range: 0.0–1.0).
+- `RAG_EVAL_LATENCY_WARN_THRESHOLD_MS`: Query latency warning threshold in milliseconds (default: `500.0`).
 
 ---
 
@@ -460,6 +466,85 @@ task = AgentTask(
 plan = agent.plan(task, AgentContext())
 for step in plan:
     print(f"- {step}")
+```
+
+---
+
+## RAG Evaluation, Retrieval Quality & Observability
+
+DevOps AI includes an automated Information Retrieval (IR) evaluation and observability framework designed to quantify retrieval precision, answer grounding, and query latency across operational datasets.
+
+### 1. Information Retrieval Metrics
+- **Precision@K**: Measures the proportion of the top-$K$ retrieved document chunks that are relevant to the query:
+  $$\text{Precision}@K = \frac{|\text{retrieved}_{1..K} \cap \text{relevant}|}{K}$$
+- **Recall@K**: Evaluates the fraction of all ground-truth relevant operational runbooks retrieved in the top-$K$ results:
+  $$\text{Recall}@K = \frac{|\text{retrieved}_{1..K} \cap \text{relevant}|}{|\text{relevant}|}$$
+- **Mean Reciprocal Rank (MRR)**: Quantifies the ranking position of the first relevant document chunk:
+  $$\text{RR} = \frac{1}{\text{rank}_{\text{first}}}, \quad \text{MRR} = \frac{1}{|Q|} \sum_{q \in Q} \text{RR}(q)$$
+- **Normalized Discounted Cumulative Gain (nDCG@K)**: Evaluates ranked retrieval with graded relevance (e.g. 3 = critical, 2 = relevant, 1 = related):
+  $$\text{DCG}@K = \sum_{i=1}^K \frac{2^{rel_i} - 1}{\log_2(i + 1)}, \quad \text{nDCG}@K = \frac{\text{DCG}@K}{\text{IDCG}@K}$$
+
+### 2. Answer Grounding & Citation Faithfulness
+- **Citation Verification**: Scans agent diagnostic plans and answers for explicit citations (e.g. `[DOC-K8S-RUNBOOK-01]` or `[CHUNK-01]`) and calculates **Citation Coverage** against retrieved evidence chunks. Any citation referencing documents not in retrieved context is flagged as a hallucination.
+- **Lexical Evidence Overlap (Proxy Heuristic)**: Evaluates sentence-level claim containment against retrieved runbook tokens after normalizing text and stripping English stopwords.
+  > **Important Note:** Lexical evidence overlap is a heuristic proxy metric for groundedness. It indicates whether claims use vocabulary present in the retrieved operational documentation. It does **not** provide mathematical proof of causal validity or reasoning correctness.
+- **Supported vs. Unsupported Claims**: Claims falling below `RAG_EVAL_GROUNDEDNESS_OVERLAP_THRESHOLD` (default: 0.3) are flagged as unsupported.
+
+### 3. Decomposed Latency Observability
+Measures query execution using monotonic high-resolution timers (`time.perf_counter()`), decomposed into:
+- **Embedding Latency**: Time required for dense query vectorization.
+- **Search Latency**: Time required for vector store HNSW approximate nearest-neighbor query.
+- **Total Latency**: End-to-end duration including content-hash deduplication and deterministic sorting.
+- Summary distributions computed across all benchmark queries: **Mean, Median (p50), p90, p95, p99, Min, Max**.
+
+### 4. CLI Evaluation & CI/CD Quality Gates
+Run benchmarks using the unified CLI tool:
+
+```bash
+# Run evaluation with the built-in synthetic DevOps operational benchmark
+devops-ai rag evaluate
+
+# Evaluate custom rank cutoffs and emit structured JSON for pipelines
+devops-ai rag evaluate --k "1,3,5" --json
+
+# Save comprehensive evaluation report to file
+devops-ai rag evaluate --output report.json
+
+# Run against a custom JSON or YAML benchmark dataset
+devops-ai rag evaluate --dataset ./benchmarks/incident_eval.json
+
+# Enforce strict quality gates in CI/CD (exits with code 1 if thresholds are violated)
+devops-ai rag evaluate \
+    --min-precision 0.70 \
+    --min-recall 0.80 \
+    --min-mrr 0.75 \
+    --min-ndcg 0.70 \
+    --max-latency-ms 250.0
+```
+
+### 5. Python Programmatic Evaluation
+```python
+from devops_ai.rag.evaluation import RAGEvaluator, get_builtin_evaluation_dataset
+from devops_ai.rag.retriever import RAGRetriever
+
+# 1. Initialize retriever and evaluator
+retriever = RAGRetriever()
+evaluator = RAGEvaluator(retriever=retriever)
+
+# 2. Load dataset (built-in or custom via load_evaluation_dataset)
+dataset = get_builtin_evaluation_dataset()
+
+# 3. Execute evaluation with CI quality gate thresholds
+report = evaluator.evaluate_dataset(
+    dataset=dataset,
+    k_values=[1, 3, 5],
+    quality_thresholds={"min_precision": 0.6, "min_mrr": 0.7, "max_latency_ms": 300.0},
+    raise_on_threshold_failure=False,
+)
+
+print(f"Passed Quality Gates: {report.passed_quality_gates}")
+print(f"Mean MRR: {report.mean_retrieval_metrics.mrr:.4f}")
+print(f"p95 Latency: {report.latency_summary.total_latency.p95:.2f} ms")
 ```
 
 ---

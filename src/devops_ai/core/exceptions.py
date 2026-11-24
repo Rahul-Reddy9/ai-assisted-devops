@@ -256,3 +256,39 @@ class RetrievalError(RAGError):
             f"Semantic retrieval error: {message}",
             code="RETRIEVAL_ERROR",
         )
+
+
+# =====================================================================
+# RAG Evaluation Exceptions (Phase 5 Commit 4)
+# =====================================================================
+
+
+class EvaluationError(RAGError):
+    """Base exception for RAG evaluation and quality assessment errors."""
+
+    def __init__(self, message: str, code: str = "EVALUATION_ERROR") -> None:
+        super().__init__(message, code=code)
+
+
+class DatasetValidationError(EvaluationError):
+    """Raised when an evaluation dataset file is malformed, missing, or violates constraints."""
+
+    def __init__(self, message: str, path: str = "unknown") -> None:
+        super().__init__(
+            f"Evaluation dataset error at '{path}': {message}",
+            code="DATASET_VALIDATION_ERROR",
+        )
+        self.path = path
+
+
+class EvaluationThresholdError(EvaluationError):
+    """Raised when evaluation metrics fail to meet configured quality thresholds."""
+
+    def __init__(self, metric: str, expected: float, actual: float) -> None:
+        super().__init__(
+            f"Quality threshold violation for '{metric}': expected >= {expected}, got {actual}",
+            code="EVALUATION_THRESHOLD_ERROR",
+        )
+        self.metric = metric
+        self.expected = expected
+        self.actual = actual
