@@ -120,6 +120,39 @@ devops-ai log-analyze /path/to/app.log --ml
 devops-ai log-analyze /path/to/app.log --json
 ```
 
+### 5. Incident Lifecycle Management & Two-Tier RCA
+```bash
+# List all recorded operational incidents (filtered by status, severity, or activity)
+devops-ai incident list
+devops-ai incident list --status DETECTED --severity CRITICAL
+devops-ai incident list --active-only
+devops-ai incident list --json
+
+# Inspect comprehensive details, correlated evidence, and timeline of an incident
+devops-ai incident show INC-20261124-0001
+devops-ai incident show INC-20261124-0001 --json
+
+# Perform two-tier root cause analysis (Tier 1 deterministic + conditional Tier 2 AI)
+devops-ai incident analyze INC-20261124-0001
+devops-ai incident analyze INC-20261124-0001 --force-tier2
+devops-ai incident analyze INC-20261124-0001 --skip-tier2
+devops-ai incident analyze INC-20261124-0001 --json
+
+# Run targeted RCA diagnosis and view risk-categorized remediation advisory
+devops-ai incident rca INC-20261124-0001
+devops-ai incident rca INC-20261124-0001 --force-tier2
+devops-ai incident rca INC-20261124-0001 --json
+
+# Transition incident through resolution and closure with operator notes
+devops-ai incident resolve INC-20261124-0001 --notes "Increased pod memory limit to 1Gi"
+devops-ai incident close INC-20261124-0001 --notes "Post-mortem completed and reviewed"
+
+# Export structured incident post-mortem reports (Markdown, JSON, or Terminal)
+devops-ai incident report INC-20261124-0001 --format markdown --output postmortem.md
+devops-ai incident report INC-20261124-0001 --format json --output incident.json
+devops-ai incident report INC-20261124-0001 --format terminal
+```
+
 ---
 
 ## Prometheus Metrics Reference

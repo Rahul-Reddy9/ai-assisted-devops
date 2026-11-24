@@ -3,7 +3,9 @@
 """Command-line interface entry point for DevOps AI."""
 
 from dataclasses import asdict
+import datetime
 import json
+import logging
 from pathlib import Path
 import re
 import time
@@ -17,10 +19,25 @@ import typer
 
 from devops_ai import __version__
 from devops_ai.core.config import get_settings
-from devops_ai.core.exceptions import DevOpsAIError
+from devops_ai.core.exceptions import (
+    ConcurrencyConflictError,
+    DevOpsAIError,
+    IncidentNotFoundError,
+    RepositoryLockError,
+)
 from devops_ai.core.logging import setup_logging
 from devops_ai.generators.dockerfile import DockerfileGenerator
 from devops_ai.generators.k8s_manifest import K8sManifestGenerator
+from devops_ai.incident import (
+    AlertSource,
+    Category,
+    IncidentAnalyzer,
+    IncidentReporter,
+    IncidentRepository,
+    IncidentStatus,
+    Severity,
+    TimelineEntry,
+)
 from devops_ai.llm.router import LLMRouter
 from devops_ai.observability import (
     DockerMonitor,
@@ -46,12 +63,16 @@ provider_app = typer.Typer(name="provider", help="Inspect and test LLM provider 
 health_app = typer.Typer(name="health", help="Evaluate process liveness and readiness.")
 metrics_app = typer.Typer(name="metrics", help="Prometheus telemetry endpoints and inspection.")
 monitor_app = typer.Typer(name="monitor", help="Inspect container and Kubernetes infrastructure.")
+incident_app = typer.Typer(
+    name="incident", help="Autonomous incident investigation, lifecycle management, and RCA."
+)
 
 app.add_typer(generate_app)
 app.add_typer(provider_app)
 app.add_typer(health_app)
 app.add_typer(metrics_app)
 app.add_typer(monitor_app)
+app.add_typer(incident_app)
 
 console = Console()
 
@@ -809,6 +830,550 @@ def log_analyze(
     except DevOpsAIError as e:
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Log Analysis Failed"))
+        raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(f"[bold red]Unexpected error: {safe_msg}[/bold red]", title="Fatal Error")
+        )
+        raise typer.Exit(code=1)
+
+
+# =====================================================================
+# Incident Investigation & Lifecycle Management Subcommands
+# =====================================================================
+
+
+@incident_app.command("analyze")
+def incident_analyze(
+    incident_id: str = typer.Argument(..., help="Unique incident identifier to analyze."),
+    force_tier2: bool = typer.Option(
+        False,
+        "--force-tier2",
+        help="Force Tier 2 AI investigation regardless of Tier 1 confidence.",
+    ),
+    skip_tier2: bool = typer.Option(
+        False,
+        "--skip-tier2",
+        help="Skip Tier 2 AI investigation and retain Tier 1 deterministic results only.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit raw JSON representation of the analyzed incident."
+    ),
+):
+    """Perform two-tier root cause analysis on an incident."""
+    try:
+        if json_output:
+            logging.getLogger("devops_ai").setLevel(logging.WARNING)
+
+        repo = IncidentRepository()
+        incident = repo.get_or_raise(incident_id)
+        analyzer = IncidentAnalyzer()
+        analyzed = analyzer.analyze(incident, force_tier2=force_tier2, skip_tier2=skip_tier2)
+        saved = repo.save(analyzed)
+
+        if json_output:
+            print(IncidentReporter.render_json(saved))
+        else:
+            IncidentReporter.render_terminal(saved, console=console)
+    except IncidentNotFoundError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Incident Not Found"))
+        raise typer.Exit(code=1)
+    except (RepositoryLockError, ConcurrencyConflictError, DevOpsAIError) as e:
+        safe_msg = escape(_sanitize_cli_text(e.message if hasattr(e, "message") else str(e)))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Analysis Failed"))
+        raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(f"[bold red]Unexpected error: {safe_msg}[/bold red]", title="Fatal Error")
+        )
+        raise typer.Exit(code=1)
+
+
+@incident_app.command("list")
+def incident_list(
+    status: Optional[str] = typer.Option(
+        None,
+        "--status",
+        "-s",
+        help="Filter by status (DETECTED, CORRELATED, INVESTIGATING, ANALYZED, RESOLVED, CLOSED).",
+    ),
+    severity: Optional[str] = typer.Option(
+        None, "--severity", help="Filter by severity (INFO, LOW, MEDIUM, HIGH, CRITICAL)."
+    ),
+    category: Optional[str] = typer.Option(
+        None,
+        "--category",
+        help="Filter by category (INFRASTRUCTURE, CONTAINER, APPLICATION, NETWORK, PROVIDER, UNKNOWN).",
+    ),
+    active_only: bool = typer.Option(
+        False, "--active-only", help="Filter for active incidents (excluding RESOLVED and CLOSED)."
+    ),
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum number of incidents to return."),
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON list of incidents."),
+):
+    """List operational incidents with optional filtering."""
+    try:
+        status_filter: Optional[IncidentStatus] = None
+        if status:
+            try:
+                status_filter = IncidentStatus(status.strip().upper())
+            except ValueError:
+                console.print(
+                    Panel(
+                        f"[bold red]Invalid status: '{escape(status)}'. Must be one of: "
+                        f"{', '.join(s.value for s in IncidentStatus)}[/bold red]",
+                        title="Input Error",
+                    )
+                )
+                raise typer.Exit(code=2)
+
+        severity_filter: Optional[Severity] = None
+        if severity:
+            try:
+                severity_filter = Severity(severity.strip().upper())
+            except ValueError:
+                console.print(
+                    Panel(
+                        f"[bold red]Invalid severity: '{escape(severity)}'. Must be one of: "
+                        f"{', '.join(s.value for s in Severity)}[/bold red]",
+                        title="Input Error",
+                    )
+                )
+                raise typer.Exit(code=2)
+
+        category_filter: Optional[Category] = None
+        if category:
+            try:
+                category_filter = Category(category.strip().upper())
+            except ValueError:
+                console.print(
+                    Panel(
+                        f"[bold red]Invalid category: '{escape(category)}'. Must be one of: "
+                        f"{', '.join(c.value for c in Category)}[/bold red]",
+                        title="Input Error",
+                    )
+                )
+                raise typer.Exit(code=2)
+
+        repo = IncidentRepository()
+        incidents = repo.list_all(
+            status=status_filter,
+            severity=severity_filter,
+            active_only=active_only,
+            limit=limit,
+        )
+
+        if category_filter:
+            incidents = [inc for inc in incidents if inc.category == category_filter]
+
+        if json_output:
+            raw_list = [json.loads(IncidentReporter.render_json(inc)) for inc in incidents]
+            print(json.dumps(raw_list, indent=2))
+            return
+
+        if not incidents:
+            console.print(
+                Panel(
+                    "[dim]No incidents matching the specified criteria were found.[/dim]",
+                    title="DevOps AI Incidents",
+                    border_style="cyan",
+                )
+            )
+            return
+
+        table = Table(
+            title="DevOps AI Operational Incidents", show_header=True, header_style="bold"
+        )
+        table.add_column("Incident ID", style="bold cyan", no_wrap=True)
+        table.add_column("Severity")
+        table.add_column("Status")
+        table.add_column("Category", style="magenta")
+        table.add_column("Title", style="white")
+        table.add_column("Components", style="dim")
+        table.add_column("Updated (UTC)", style="dim")
+
+        for inc in incidents:
+            sev_col = (
+                "bold red"
+                if inc.severity == Severity.CRITICAL
+                else ("red" if inc.severity == Severity.HIGH else "yellow")
+            )
+            stat_col = (
+                "green"
+                if inc.status == IncidentStatus.RESOLVED
+                else ("dim green" if inc.status == IncidentStatus.CLOSED else "yellow")
+            )
+            comps = ", ".join(inc.components_affected) or "None"
+            table.add_row(
+                escape(inc.incident_id),
+                f"[{sev_col}]{escape(inc.severity.value)}[/{sev_col}]",
+                f"[{stat_col}]{escape(inc.status.value)}[/{stat_col}]",
+                escape(inc.category.value),
+                escape(_sanitize_cli_text(inc.title)),
+                escape(comps),
+                escape(inc.updated_at.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+
+        console.print(table)
+    except (RepositoryLockError, DevOpsAIError) as e:
+        safe_msg = escape(_sanitize_cli_text(e.message if hasattr(e, "message") else str(e)))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="List Failed"))
+        raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(f"[bold red]Unexpected error: {safe_msg}[/bold red]", title="Fatal Error")
+        )
+        raise typer.Exit(code=1)
+
+
+@incident_app.command("show")
+def incident_show(
+    incident_id: str = typer.Argument(..., help="Unique incident identifier to view."),
+    json_output: bool = typer.Option(False, "--json", help="Emit raw JSON representation."),
+):
+    """Display comprehensive details, root cause, and recommendations for an incident."""
+    try:
+        repo = IncidentRepository()
+        incident = repo.get_or_raise(incident_id)
+
+        if json_output:
+            print(IncidentReporter.render_json(incident))
+        else:
+            IncidentReporter.render_terminal(incident, console=console)
+    except IncidentNotFoundError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Incident Not Found"))
+        raise typer.Exit(code=1)
+    except (RepositoryLockError, DevOpsAIError) as e:
+        safe_msg = escape(_sanitize_cli_text(e.message if hasattr(e, "message") else str(e)))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Operation Failed"))
+        raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(f"[bold red]Unexpected error: {safe_msg}[/bold red]", title="Fatal Error")
+        )
+        raise typer.Exit(code=1)
+
+
+@incident_app.command("resolve")
+def incident_resolve(
+    incident_id: str = typer.Argument(..., help="Unique incident identifier to resolve."),
+    notes: Optional[str] = typer.Option(
+        None, "--notes", "-n", help="Resolution notes or mitigation summary."
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit raw JSON representation of the resolved incident."
+    ),
+):
+    """Mark an incident as RESOLVED with resolution notes and timeline entry."""
+    try:
+        repo = IncidentRepository()
+        incident = repo.get_or_raise(incident_id)
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        incident.status = IncidentStatus.RESOLVED
+        incident.resolved_at = now
+        if notes:
+            incident.resolution_notes = notes
+
+        incident.timeline.append(
+            TimelineEntry(
+                timestamp=now,
+                source=AlertSource.MANUAL,
+                component=incident.components_affected[0]
+                if incident.components_affected
+                else "system",
+                event=f"Incident resolved by operator: {notes or 'No resolution notes provided'}",
+                severity=Severity.INFO,
+            )
+        )
+        saved = repo.save(incident)
+
+        if json_output:
+            print(IncidentReporter.render_json(saved))
+        else:
+            console.print(
+                Panel(
+                    f"[bold green]Incident '{escape(saved.incident_id)}' marked as RESOLVED.[/bold green]\n"
+                    f"Notes: {escape(_sanitize_cli_text(notes or 'None'))}",
+                    title="Incident Resolved",
+                    border_style="green",
+                )
+            )
+    except IncidentNotFoundError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Incident Not Found"))
+        raise typer.Exit(code=1)
+    except (RepositoryLockError, ConcurrencyConflictError, DevOpsAIError) as e:
+        safe_msg = escape(_sanitize_cli_text(e.message if hasattr(e, "message") else str(e)))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Resolve Failed"))
+        raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(f"[bold red]Unexpected error: {safe_msg}[/bold red]", title="Fatal Error")
+        )
+        raise typer.Exit(code=1)
+
+
+@incident_app.command("close")
+def incident_close(
+    incident_id: str = typer.Argument(..., help="Unique incident identifier to close."),
+    notes: Optional[str] = typer.Option(None, "--notes", "-n", help="Post-incident closing notes."),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit raw JSON representation of the closed incident."
+    ),
+):
+    """Mark an incident as CLOSED with closing notes and timeline entry."""
+    try:
+        repo = IncidentRepository()
+        incident = repo.get_or_raise(incident_id)
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        incident.status = IncidentStatus.CLOSED
+        incident.closed_at = now
+        if not incident.resolved_at:
+            incident.resolved_at = now
+
+        if notes:
+            if incident.resolution_notes:
+                incident.resolution_notes = f"{incident.resolution_notes}\n[Closed]: {notes}"
+            else:
+                incident.resolution_notes = f"[Closed]: {notes}"
+
+        incident.timeline.append(
+            TimelineEntry(
+                timestamp=now,
+                source=AlertSource.MANUAL,
+                component=incident.components_affected[0]
+                if incident.components_affected
+                else "system",
+                event=f"Incident closed by operator: {notes or 'No closing notes provided'}",
+                severity=Severity.INFO,
+            )
+        )
+        saved = repo.save(incident)
+
+        if json_output:
+            print(IncidentReporter.render_json(saved))
+        else:
+            console.print(
+                Panel(
+                    f"[bold green]Incident '{escape(saved.incident_id)}' marked as CLOSED.[/bold green]\n"
+                    f"Notes: {escape(_sanitize_cli_text(notes or 'None'))}",
+                    title="Incident Closed",
+                    border_style="green",
+                )
+            )
+    except IncidentNotFoundError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Incident Not Found"))
+        raise typer.Exit(code=1)
+    except (RepositoryLockError, ConcurrencyConflictError, DevOpsAIError) as e:
+        safe_msg = escape(_sanitize_cli_text(e.message if hasattr(e, "message") else str(e)))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Close Failed"))
+        raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(f"[bold red]Unexpected error: {safe_msg}[/bold red]", title="Fatal Error")
+        )
+        raise typer.Exit(code=1)
+
+
+@incident_app.command("report")
+def incident_report(
+    incident_id: str = typer.Argument(..., help="Unique incident identifier to export report for."),
+    format_type: str = typer.Option(
+        "markdown", "--format", "-f", help="Output format: markdown, json, or terminal."
+    ),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o", help="File path to write report to (defaults to stdout/console)."
+    ),
+):
+    """Generate and export a structured post-mortem report for an incident."""
+    try:
+        fmt = format_type.strip().lower()
+        if fmt not in ("markdown", "md", "json", "terminal"):
+            console.print(
+                Panel(
+                    f"[bold red]Unsupported format: '{escape(format_type)}'. Must be 'markdown', 'json', or 'terminal'.[/bold red]",
+                    title="Input Error",
+                )
+            )
+            raise typer.Exit(code=2)
+
+        repo = IncidentRepository()
+        incident = repo.get_or_raise(incident_id)
+
+        if output:
+            IncidentReporter.export_report(
+                incident, format=fmt, output_path=output, console=console
+            )
+            console.print(
+                Panel(
+                    f"[bold green]Post-mortem report exported successfully.[/bold green]\n"
+                    f"Format: [cyan]{escape(fmt)}[/cyan]\n"
+                    f"Destination: [cyan]{escape(str(output))}[/cyan]",
+                    title="Report Exported",
+                    border_style="green",
+                )
+            )
+        else:
+            if fmt in ("markdown", "md"):
+                print(IncidentReporter.render_markdown(incident))
+            elif fmt == "json":
+                print(IncidentReporter.render_json(incident))
+            elif fmt == "terminal":
+                IncidentReporter.render_terminal(incident, console=console)
+    except IncidentNotFoundError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Incident Not Found"))
+        raise typer.Exit(code=1)
+    except (RepositoryLockError, DevOpsAIError) as e:
+        safe_msg = escape(_sanitize_cli_text(e.message if hasattr(e, "message") else str(e)))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Report Failed"))
+        raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(f"[bold red]Unexpected error: {safe_msg}[/bold red]", title="Fatal Error")
+        )
+        raise typer.Exit(code=1)
+
+
+@incident_app.command("rca")
+def incident_rca(
+    incident_id: str = typer.Argument(..., help="Unique incident identifier to diagnose."),
+    force_tier2: bool = typer.Option(
+        False,
+        "--force-tier2",
+        help="Force Tier 2 AI investigation regardless of Tier 1 confidence.",
+    ),
+    skip_tier2: bool = typer.Option(
+        False,
+        "--skip-tier2",
+        help="Skip Tier 2 AI investigation and use Tier 1 deterministic engine only.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit root cause and remediation recommendations as JSON."
+    ),
+):
+    """Run targeted root-cause analysis and view diagnosis with remediation advisory."""
+    try:
+        if json_output:
+            logging.getLogger("devops_ai").setLevel(logging.WARNING)
+
+        repo = IncidentRepository()
+        incident = repo.get_or_raise(incident_id)
+        analyzer = IncidentAnalyzer()
+        analyzed = analyzer.analyze(incident, force_tier2=force_tier2, skip_tier2=skip_tier2)
+        saved = repo.save(analyzed)
+
+        if json_output:
+            rca_payload = {
+                "incident_id": saved.incident_id,
+                "status": saved.status.value,
+                "root_cause": saved.root_cause.model_dump(mode="json")
+                if saved.root_cause
+                else None,
+                "alternative_hypotheses": [
+                    h.model_dump(mode="json") for h in saved.alternative_hypotheses
+                ],
+                "recommendations": [r.model_dump(mode="json") for r in saved.recommendations],
+            }
+            print(json.dumps(rca_payload, indent=2))
+        else:
+            if saved.root_cause:
+                rc = saved.root_cause
+                tier_badge = (
+                    "Tier 1 (Deterministic)"
+                    if rc.tier == "tier_1_deterministic"
+                    else "Tier 2 (AI-Assisted)"
+                )
+                stat_str = (
+                    "[bold green]CONFIRMED[/bold green]"
+                    if rc.is_confirmed
+                    else (
+                        "[bold red]UNSUPPORTED[/bold red]"
+                        if rc.is_unsupported
+                        else "[yellow]UNCONFIRMED[/yellow]"
+                    )
+                )
+                console.print(
+                    Panel(
+                        f"Incident ID: [bold cyan]{escape(saved.incident_id)}[/bold cyan]\n"
+                        f"Root Cause: [bold yellow]{escape(_sanitize_cli_text(rc.title))}[/bold yellow]\n"
+                        f"Engine: [cyan]{tier_badge}[/cyan] | Status: {stat_str} | Confidence: [bold]{rc.confidence:.0%}[/bold]\n\n"
+                        f"{escape(_sanitize_cli_text(rc.description))}",
+                        title="[bold yellow]Root Cause Diagnosis[/bold yellow]",
+                        border_style="yellow",
+                    )
+                )
+            else:
+                console.print(
+                    Panel(
+                        f"No conclusive root cause identified for incident '{escape(saved.incident_id)}'.",
+                        title="Root Cause Diagnosis",
+                        border_style="dim",
+                    )
+                )
+
+            if saved.recommendations:
+                rec_table = Table(
+                    title="Remediation Advisory (ADVISORY ONLY — Human Execution Required)",
+                    show_header=True,
+                    header_style="bold",
+                )
+                rec_table.add_column("Action ID", style="dim", width=12)
+                rec_table.add_column("Risk", width=12)
+                rec_table.add_column("Command / Action", style="white")
+                rec_table.add_column("Verification Step", style="green")
+
+                for rec in saved.recommendations:
+                    risk_style = (
+                        "bold green"
+                        if rec.risk_level.value == "SAFE"
+                        else ("bold yellow" if rec.risk_level.value == "MODERATE" else "bold red")
+                    )
+                    cmd_str = (
+                        f"[bold]{escape(_sanitize_cli_text(rec.command))}[/bold]"
+                        if rec.command
+                        else f"[italic]{escape(_sanitize_cli_text(rec.title))}[/italic]"
+                    )
+                    rec_table.add_row(
+                        escape(rec.action_id),
+                        f"[{risk_style}]{escape(rec.risk_level.value)}[/{risk_style}]",
+                        cmd_str,
+                        escape(_sanitize_cli_text(rec.verification_step)),
+                    )
+                console.print(rec_table)
+    except IncidentNotFoundError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Incident Not Found"))
+        raise typer.Exit(code=1)
+    except (RepositoryLockError, ConcurrencyConflictError, DevOpsAIError) as e:
+        safe_msg = escape(_sanitize_cli_text(e.message if hasattr(e, "message") else str(e)))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="RCA Failed"))
         raise typer.Exit(code=1)
     except typer.Exit:
         raise

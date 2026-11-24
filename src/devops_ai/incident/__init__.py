@@ -34,6 +34,7 @@ from devops_ai.incident.patterns import (
     calculate_evidence_confidence,
 )
 from devops_ai.incident.remediation import RemediationAdvisor
+from devops_ai.incident.reporter import IncidentReporter, sanitize_text
 from devops_ai.incident.repository import IncidentRepository
 
 __all__ = [
@@ -52,6 +53,7 @@ __all__ = [
     "IncidentClassifier",
     "IncidentCorrelator",
     "IncidentDetector",
+    "IncidentReporter",
     "IncidentRepository",
     "IncidentStatus",
     "K8sMonitorAdapter",
@@ -66,4 +68,5 @@ __all__ = [
     "Tier2AIEngine",
     "TimelineEntry",
     "calculate_evidence_confidence",
+    "sanitize_text",
 ]
