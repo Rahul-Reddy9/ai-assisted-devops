@@ -60,6 +60,10 @@ Key configuration settings:
 - `METRICS_HOST`: Host interface to bind Prometheus metrics server (default `127.0.0.1`).
 - `METRICS_PORT`: Port to bind Prometheus metrics server (default `9090`).
 - `HEALTH_CHECK_TIMEOUT_SECONDS`: Maximum timeout for provider health telemetry probes (default `3.0`).
+- `RAG_MAX_FILE_SIZE_BYTES`: Maximum document size for RAG ingestion (default `10485760` / 10MB).
+- `RAG_MAX_PDF_PAGES`: Maximum page count for PDF document ingestion (default `500`).
+- `RAG_CHUNK_SIZE`: Default character size per document chunk (default `1000`).
+- `RAG_CHUNK_OVERLAP`: Default character overlap between consecutive chunks (default `150`).
 
 ---
 
@@ -304,7 +308,7 @@ Raw Documents (.md, .txt, .pdf, .json, .yaml)
 |---|---|---|
 | **Markdown** | `.md`, `.markdown` | Extracts document title from top-level header (`# Title`), preserves tables, lists, and code blocks. |
 | **Plain Text** | `.txt`, `.text` | UTF-8 / UTF-8-sig safe text extraction. |
-| **PDF** | `.pdf` | Multi-page text extraction via `pypdf`, extracts metadata (`/Title`), rejects encrypted PDFs. |
+| **PDF** | `.pdf` | Multi-page text extraction via `pypdf`, extracts metadata (`/Title`), rejects encrypted PDFs, and enforces configurable page limits (`rag_max_pdf_pages`, default: 500). |
 | **JSON** | `.json` | Safe parser (`json.loads`), normalizes formatting with 2-space indentation, tracks key counts. |
 | **YAML** | `.yaml`, `.yml` | Safe parser (`yaml.safe_load_all`), supports multi-document streams, tracks document counts. |
 
@@ -320,6 +324,7 @@ Executable and script extensions (`.exe`, `.sh`, `.py`, `.bin`, `.dll`, `.bat`, 
 - **Strict Read-Only Execution**: The subsystem operates in a strictly passive, read-only manner with no filesystem mutation outside transient processing.
 - **Path Traversal Defense**: All input paths are resolved and validated. Traversals containing `..` or escaping an optional `allowed_root` directory raise `DocumentSecurityError`.
 - **File Size & Input Limits**: Enforces configurable `rag_max_file_size_bytes` (default: 10MB) to prevent memory exhaustion or zip-bomb style denial of service.
+- **PDF Page Count Protection**: Enforces a strict, configurable page count limit (`rag_max_pdf_pages`, default: 500 pages) prior to extracting page text streams. Documents exceeding this threshold immediately raise `DocumentPageLimitError`, defending against PDF decompression bombs or deeply nested paginated assets.
 - **Passive Untrusted Context**: Document content is treated purely as untrusted data. Embedded instructions (e.g. `<SYSTEM_MANDATE>`) or commands (`rm -rf`, `kubectl delete`) are never executed.
 - **Automated Secret Scrubbing**: Credentials, API tokens, passwords, and bearer keys within operational documents are scrubbed prior to chunk generation.
 

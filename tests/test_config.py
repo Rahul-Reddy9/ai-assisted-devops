@@ -21,6 +21,7 @@ def test_default_settings():
     assert settings.anomaly_contamination == 0.1
     assert settings.burst_threshold == 3
     assert settings.burst_window_seconds == 30
+    assert settings.rag_max_pdf_pages == 500
 
 
 def test_custom_settings_via_env(mock_env):
@@ -54,3 +55,10 @@ def test_invalid_contamination_range():
 def test_invalid_timeout():
     with pytest.raises(ValidationError):
         Settings(llm_timeout_seconds=0.5)
+
+
+def test_invalid_rag_max_pdf_pages():
+    with pytest.raises(ValidationError):
+        Settings(rag_max_pdf_pages=0)
+    with pytest.raises(ValidationError):
+        Settings(rag_max_pdf_pages=-10)

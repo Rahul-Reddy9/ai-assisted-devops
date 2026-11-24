@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0
 """RAG document ingestion, normalization, and chunking subsystem."""
 
+from devops_ai.core.exceptions import DocumentPageLimitError
 from devops_ai.rag.chunker import SmartChunker
 from devops_ai.rag.extractors import (
     BaseExtractor,
@@ -29,6 +30,7 @@ __all__ = [
     "DocumentFormat",
     "DocumentIngestionPipeline",
     "DocumentMetadata",
+    "DocumentPageLimitError",
     "DocumentPreprocessor",
     "IngestionResult",
     "IngestionStatus",

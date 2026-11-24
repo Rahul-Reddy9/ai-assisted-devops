@@ -34,6 +34,7 @@ class DocumentIngestionPipeline:
         self,
         settings: Optional[Settings] = None,
         max_file_size_bytes: Optional[int] = None,
+        max_pdf_pages: Optional[int] = None,
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         skip_duplicates: bool = True,
@@ -43,6 +44,9 @@ class DocumentIngestionPipeline:
             max_file_size_bytes
             if max_file_size_bytes is not None
             else self.settings.rag_max_file_size_bytes
+        )
+        self.max_pdf_pages = (
+            max_pdf_pages if max_pdf_pages is not None else self.settings.rag_max_pdf_pages
         )
         c_size = chunk_size if chunk_size is not None else self.settings.rag_chunk_size
         c_overlap = chunk_overlap if chunk_overlap is not None else self.settings.rag_chunk_overlap
@@ -112,7 +116,7 @@ class DocumentIngestionPipeline:
                 )
 
             # 2. Select extractor and extract text
-            extractor = get_extractor(resolved_path)
+            extractor = get_extractor(resolved_path, max_pdf_pages=self.max_pdf_pages)
             raw_text, extractor_meta = extractor.extract(
                 resolved_path, max_bytes=self.max_file_size_bytes
             )

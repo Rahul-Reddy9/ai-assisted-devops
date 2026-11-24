@@ -9,6 +9,7 @@ import pytest
 
 from devops_ai.core.exceptions import (
     DocumentFormatError,
+    DocumentPageLimitError,
     DocumentSecurityError,
     DocumentSizeLimitError,
 )
@@ -85,6 +86,44 @@ def test_pipeline_ingest_pdf_file(tmp_path: Path):
         assert result.status == IngestionStatus.SUCCESS
         assert result.total_chunks == 1
         assert "VPC network peering" in result.chunks[0].content
+
+
+def test_pipeline_pdf_page_limit_enforcement(tmp_path: Path):
+    """Verify pipeline rejects PDFs exceeding configured max_pdf_pages."""
+    pipeline = DocumentIngestionPipeline(max_pdf_pages=3)
+    pdf_file = tmp_path / "long_doc.pdf"
+
+    writer = pypdf.PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    with open(pdf_file, "wb") as fh:
+        writer.write(fh)
+
+    # 4-page PDF with max_pdf_pages=3
+    with patch("pypdf.PdfReader") as mock_reader_cls:
+        mock_instance = MagicMock()
+        mock_instance.is_encrypted = False
+        p = MagicMock()
+        p.extract_text.return_value = "Page text"
+        mock_instance.pages = [p] * 4  # 4 pages > 3 limit
+        mock_reader_cls.return_value = mock_instance
+
+        # When raise_on_error=False
+        result = pipeline.ingest_file(pdf_file, raise_on_error=False)
+        assert result.status == IngestionStatus.FAILED
+        assert "exceeds page limit of 3 pages" in result.error
+        assert "document contains 4 pages" in result.error
+        assert result.metadata["error_type"] == "DocumentPageLimitError"
+
+        # When raise_on_error=True
+        with pytest.raises(DocumentPageLimitError) as exc_info:
+            pipeline.ingest_file(pdf_file, raise_on_error=True)
+        assert exc_info.value.page_count == 4
+        assert exc_info.value.limit == 3
+
+    # Other formats (.md, .json, .yaml, .txt) remain completely unaffected
+    md_file = tmp_path / "unaffected.md"
+    md_file.write_text("# Markdown Unaffected\nContent.", encoding="utf-8")
+    assert pipeline.ingest_file(md_file).status == IngestionStatus.SUCCESS
 
 
 def test_pipeline_duplicate_document_skipping(tmp_path: Path):

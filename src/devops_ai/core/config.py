@@ -168,6 +168,12 @@ class Settings(BaseSettings):
         default=[".md", ".txt", ".pdf", ".json", ".yaml", ".yml"],
         description="Allowed file extensions for RAG document ingestion",
     )
+    rag_max_pdf_pages: int = Field(
+        default=500,
+        ge=1,
+        le=50000,
+        description="Maximum allowed page count for PDF document ingestion (default: 500)",
+    )
 
     @field_validator("ollama_host")
     @classmethod

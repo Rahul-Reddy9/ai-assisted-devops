@@ -10,6 +10,7 @@ import pytest
 from devops_ai.core.exceptions import (
     DocumentFormatError,
     DocumentIngestionError,
+    DocumentPageLimitError,
     DocumentSizeLimitError,
 )
 from devops_ai.rag.extractors import (
@@ -146,6 +147,63 @@ def test_pdf_extractor_success_and_encrypted(tmp_path: Path):
         with pytest.raises(DocumentFormatError) as exc_info:
             extractor.extract(pdf_file, max_bytes=1024 * 1024)
         assert "Encrypted or password-protected" in str(exc_info.value)
+
+
+def test_pdf_extractor_page_limit_enforcement(tmp_path: Path):
+    """Verify PDFExtractor enforces configured page limit and validates bounds."""
+    pdf_file = tmp_path / "doc.pdf"
+    writer = pypdf.PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    with open(pdf_file, "wb") as fh:
+        writer.write(fh)
+
+    # Invalid max_pages validation
+    with pytest.raises(ValueError):
+        PDFExtractor(max_pages=0)
+    with pytest.raises(ValueError):
+        PDFExtractor(max_pages=-5)
+
+    # Below page limit: accepted
+    extractor_limit_5 = PDFExtractor(max_pages=5)
+    with patch("pypdf.PdfReader") as mock_reader_cls:
+        mock_instance = MagicMock()
+        mock_instance.is_encrypted = False
+        p_mock = MagicMock()
+        p_mock.extract_text.return_value = "Page content"
+        mock_instance.pages = [p_mock] * 3  # 3 pages
+        mock_reader_cls.return_value = mock_instance
+
+        text, meta = extractor_limit_5.extract(pdf_file, max_bytes=1024 * 1024)
+        assert meta["page_count"] == 3
+
+    # Exactly at page limit: accepted
+    with patch("pypdf.PdfReader") as mock_reader_cls:
+        mock_instance = MagicMock()
+        mock_instance.is_encrypted = False
+        p_mock = MagicMock()
+        p_mock.extract_text.return_value = "Page content"
+        mock_instance.pages = [p_mock] * 5  # Exactly 5 pages
+        mock_reader_cls.return_value = mock_instance
+
+        text, meta = extractor_limit_5.extract(pdf_file, max_bytes=1024 * 1024)
+        assert meta["page_count"] == 5
+
+    # Exceeds page limit: rejected with DocumentPageLimitError
+    with patch("pypdf.PdfReader") as mock_reader_cls:
+        mock_instance = MagicMock()
+        mock_instance.is_encrypted = False
+        p_mock = MagicMock()
+        p_mock.extract_text.return_value = "Page content"
+        mock_instance.pages = [p_mock] * 6  # 6 pages > 5 limit
+        mock_reader_cls.return_value = mock_instance
+
+        with pytest.raises(DocumentPageLimitError) as exc_info:
+            extractor_limit_5.extract(pdf_file, max_bytes=1024 * 1024)
+
+        assert "exceeds page limit of 5 pages" in str(exc_info.value)
+        assert "document contains 6 pages" in str(exc_info.value)
+        assert exc_info.value.page_count == 6
+        assert exc_info.value.limit == 5
 
 
 def test_extractor_file_size_limit(tmp_path: Path):

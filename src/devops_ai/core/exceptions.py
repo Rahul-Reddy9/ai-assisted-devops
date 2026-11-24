@@ -173,6 +173,18 @@ class DocumentSizeLimitError(RAGError):
         self.limit = limit
 
 
+class DocumentPageLimitError(DocumentSizeLimitError):
+    """Raised when a PDF or paginated document exceeds configured page count limits."""
+
+    def __init__(self, message: str, page_count: int = 0, limit: int = 0) -> None:
+        super().__init__(
+            f"Document page limit exceeded ({page_count} pages > {limit} pages limit): {message}",
+            size=page_count,
+            limit=limit,
+        )
+        self.page_count = page_count
+
+
 class DocumentSecurityError(RAGError):
     """Raised when path traversal or unauthorized document access is detected."""
 

@@ -9,9 +9,11 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import yaml
 
+from devops_ai.core.config import get_settings
 from devops_ai.core.exceptions import (
     DocumentFormatError,
     DocumentIngestionError,
+    DocumentPageLimitError,
     DocumentSizeLimitError,
 )
 from devops_ai.rag.models import DocumentFormat
@@ -196,6 +198,11 @@ class YAMLExtractor(BaseExtractor):
 class PDFExtractor(BaseExtractor):
     """Extractor for PDF (.pdf) documents extracting text streams per page."""
 
+    def __init__(self, max_pages: Optional[int] = None) -> None:
+        if max_pages is not None and max_pages <= 0:
+            raise ValueError(f"max_pages must be a positive integer, got {max_pages}")
+        self.max_pages = max_pages
+
     def extract(self, file_path: Path, max_bytes: int) -> Tuple[str, Dict[str, Any]]:
         size = self._validate_file_size(file_path, max_bytes)
         if not _PYPDF_AVAILABLE:
@@ -214,6 +221,14 @@ class PDFExtractor(BaseExtractor):
         if reader.is_encrypted:
             raise DocumentFormatError(
                 "Encrypted or password-protected PDF files are not supported", format_type="pdf"
+            )
+
+        total_pages = len(reader.pages)
+        if self.max_pages is not None and total_pages > self.max_pages:
+            raise DocumentPageLimitError(
+                f"PDF document exceeds page limit of {self.max_pages} pages (document contains {total_pages} pages)",
+                page_count=total_pages,
+                limit=self.max_pages,
             )
 
         page_texts = []
@@ -235,7 +250,7 @@ class PDFExtractor(BaseExtractor):
         metadata: Dict[str, Any] = {
             "format": DocumentFormat.PDF.value,
             "raw_size_bytes": size,
-            "page_count": len(reader.pages),
+            "page_count": total_pages,
         }
         if doc_title:
             metadata["title"] = str(doc_title)
@@ -243,7 +258,10 @@ class PDFExtractor(BaseExtractor):
         return combined_text, metadata
 
 
-def get_extractor(file_path: Union[str, Path]) -> BaseExtractor:
+def get_extractor(
+    file_path: Union[str, Path],
+    max_pdf_pages: Optional[int] = None,
+) -> BaseExtractor:
     """Resolve the appropriate extractor instance for the given file path.
 
     Raises:
@@ -284,7 +302,10 @@ def get_extractor(file_path: Union[str, Path]) -> BaseExtractor:
     elif doc_format == DocumentFormat.YAML:
         return YAMLExtractor()
     elif doc_format == DocumentFormat.PDF:
-        return PDFExtractor()
+        effective_max_pages = (
+            max_pdf_pages if max_pdf_pages is not None else get_settings().rag_max_pdf_pages
+        )
+        return PDFExtractor(max_pages=effective_max_pages)
     else:  # pragma: no cover
         raise DocumentFormatError(
             f"No extractor registered for format '{doc_format}'", format_type=str(doc_format)
