@@ -112,6 +112,8 @@ def test_pipeline_pdf_page_limit_enforcement(tmp_path: Path):
         assert result.status == IngestionStatus.FAILED
         assert "exceeds page limit of 3 pages" in result.error
         assert "document contains 4 pages" in result.error
+        assert "bytes" not in result.error
+        assert "Document size limit exceeded" not in result.error
         assert result.metadata["error_type"] == "DocumentPageLimitError"
 
         # When raise_on_error=True
@@ -119,6 +121,10 @@ def test_pipeline_pdf_page_limit_enforcement(tmp_path: Path):
             pipeline.ingest_file(pdf_file, raise_on_error=True)
         assert exc_info.value.page_count == 4
         assert exc_info.value.limit == 3
+        assert exc_info.value.size == 4
+        assert isinstance(exc_info.value, DocumentSizeLimitError)
+        assert "bytes" not in str(exc_info.value)
+        assert "Document size limit exceeded" not in str(exc_info.value)
 
     # Other formats (.md, .json, .yaml, .txt) remain completely unaffected
     md_file = tmp_path / "unaffected.md"

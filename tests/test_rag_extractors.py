@@ -200,10 +200,15 @@ def test_pdf_extractor_page_limit_enforcement(tmp_path: Path):
         with pytest.raises(DocumentPageLimitError) as exc_info:
             extractor_limit_5.extract(pdf_file, max_bytes=1024 * 1024)
 
-        assert "exceeds page limit of 5 pages" in str(exc_info.value)
-        assert "document contains 6 pages" in str(exc_info.value)
+        error_msg = str(exc_info.value)
+        assert "exceeds page limit of 5 pages" in error_msg
+        assert "document contains 6 pages" in error_msg
+        assert "bytes" not in error_msg
+        assert "Document size limit exceeded" not in error_msg
         assert exc_info.value.page_count == 6
         assert exc_info.value.limit == 5
+        assert exc_info.value.size == 6
+        assert isinstance(exc_info.value, DocumentSizeLimitError)
 
 
 def test_extractor_file_size_limit(tmp_path: Path):
