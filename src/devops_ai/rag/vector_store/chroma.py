@@ -26,11 +26,16 @@ class ChromaVectorStore(BaseVectorStore):
         persist_directory: Optional[Union[str, Path]] = None,
         collection_name: str = "devops_ai_rag",
         dimension: Optional[int] = None,
+        embedding_model: Optional[str] = None,
     ) -> None:
         settings = get_settings()
         self._collection_name = collection_name
-        self._dimension = dimension or settings.rag_embedding_dimension
+        self._dimension = dimension if dimension is not None else settings.rag_embedding_dimension
+        self._embedding_model = embedding_model or settings.rag_embedding_model
         self.store_name = "chroma"
+
+        if self._dimension <= 0:
+            raise ValueError(f"dimension must be a positive integer, got {self._dimension}")
 
         raw_path = persist_directory or settings.rag_vector_store_path
         self._is_ephemeral = raw_path == ":memory:"
@@ -46,11 +51,45 @@ class ChromaVectorStore(BaseVectorStore):
                 self._persist_path.mkdir(parents=True, exist_ok=True)
                 self._client = chromadb.PersistentClient(path=str(self._persist_path))
 
-            # Initialize or retrieve collection with cosine distance space
+            # Initialize or retrieve collection with cosine distance space and model metadata
+            target_metadata = {
+                "hnsw:space": "cosine",
+                "dimension": self._dimension,
+                "embedding_model": self._embedding_model,
+            }
             self._collection = self._client.get_or_create_collection(
                 name=self._collection_name,
-                metadata={"hnsw:space": "cosine"},
+                metadata=target_metadata,
             )
+
+            # Inspect and validate existing collection metadata
+            existing_meta = self._collection.metadata or {}
+            stored_dim = existing_meta.get("dimension")
+            stored_model = existing_meta.get("embedding_model")
+
+            if stored_dim is None or stored_model is None:
+                raise VectorStoreError(
+                    f"Vector store collection '{self._collection_name}' lacks required embedding metadata "
+                    f"('dimension' and 'embedding_model'). Cannot safely verify compatibility.",
+                    store_name=self.store_name,
+                )
+
+            if int(stored_dim) != self._dimension:
+                raise EmbeddingDimensionMismatchError(
+                    f"Vector store collection '{self._collection_name}' dimension {stored_dim} "
+                    f"does not match configured {self._dimension}",
+                    expected=self._dimension,
+                    actual=int(stored_dim),
+                )
+
+            if str(stored_model) != self._embedding_model:
+                raise VectorStoreError(
+                    f"Vector store collection '{self._collection_name}' was created with embedding model "
+                    f"'{stored_model}', but configured model is '{self._embedding_model}'",
+                    store_name=self.store_name,
+                )
+        except (EmbeddingDimensionMismatchError, VectorStoreError):
+            raise
         except ImportError:
             raise VectorStoreError(
                 "ChromaDB is not installed. Please install via: pip install 'devops-ai[chromadb]'",
@@ -70,6 +109,14 @@ class ChromaVectorStore(BaseVectorStore):
     @property
     def collection_name(self) -> str:
         return self._collection_name
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
+    @property
+    def embedding_model(self) -> str:
+        return self._embedding_model
 
     def _sanitize_metadata(
         self, metadata: Dict[str, Any]
@@ -286,6 +333,53 @@ class ChromaVectorStore(BaseVectorStore):
                 store_name=self.store_name,
             ) from e
 
+    def delete_by_source_path(
+        self,
+        source_path: str,
+        exclude_document_id: Optional[str] = None,
+    ) -> int:
+        """Delete all chunks originating from the given canonical source path.
+
+        Args:
+            source_path: Canonical filesystem path or URI of the source document.
+            exclude_document_id: Optional document ID to preserve (e.g. when replacing
+                an older version with a newly indexed version).
+
+        Returns:
+            Number of chunks removed.
+        """
+        try:
+            records = self._collection.get(where={"source_path": source_path})
+            ids = records.get("ids", [])
+            metadatas = records.get("metadatas", []) or []
+
+            if not ids:
+                return 0
+
+            if exclude_document_id:
+                ids_to_delete = [
+                    chunk_id
+                    for chunk_id, meta in zip(ids, metadatas)
+                    if (meta or {}).get("document_id") != exclude_document_id
+                ]
+            else:
+                ids_to_delete = list(ids)
+
+            if not ids_to_delete:
+                return 0
+
+            self._collection.delete(ids=ids_to_delete)
+            logger.debug(
+                f"Deleted {len(ids_to_delete)} obsolete chunks for source path '{source_path}'"
+            )
+            return len(ids_to_delete)
+        except Exception as e:
+            sanitized = scrub_secrets(str(e))
+            raise VectorStoreError(
+                f"Failed to delete chunks for source path '{source_path}' from ChromaDB: {sanitized}",
+                store_name=self.store_name,
+            ) from e
+
     def get_chunk(self, chunk_id: str) -> Optional[DocumentChunk]:
         """Retrieve a specific chunk by its deterministic identifier."""
         try:
@@ -331,7 +425,11 @@ class ChromaVectorStore(BaseVectorStore):
             self._client.delete_collection(name=self._collection_name)
             self._collection = self._client.get_or_create_collection(
                 name=self._collection_name,
-                metadata={"hnsw:space": "cosine"},
+                metadata={
+                    "hnsw:space": "cosine",
+                    "dimension": self._dimension,
+                    "embedding_model": self._embedding_model,
+                },
             )
             logger.debug(f"Cleared Chroma collection '{self._collection_name}'")
         except Exception as e:

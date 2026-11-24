@@ -68,10 +68,10 @@ Key configuration settings:
 - `RAG_EMBEDDING_PROVIDER`: Embedding provider (`ollama` or `mock`, default: `ollama`).
 - `RAG_EMBEDDING_MODEL`: Embedding model identifier (default: `nomic-embed-text`).
 - `RAG_EMBEDDING_DIMENSION`: Expected embedding vector dimension (default: `768`).
-- `RAG_EMBEDDING_BATCH_SIZE`: Batch size for embedding generation (default: `32`, range: 1–512).
+- `RAG_EMBEDDING_BATCH_SIZE`: Batch size for embedding generation (default: `32`, range: 1–256).
 - `RAG_VECTOR_STORE`: Vector store backend (`chroma`, default: `chroma`).
-- `RAG_VECTOR_STORE_PATH`: Local storage path for ChromaDB persistence (default: `.devops_ai/vector_store`).
-- `RAG_RETRIEVAL_TOP_K`: Default top-K retrieved document chunks (default: `3`, range: 1–50).
+- `RAG_VECTOR_STORE_PATH`: Local storage path for ChromaDB persistence (default: `./data/vector_store`).
+- `RAG_RETRIEVAL_TOP_K`: Default top-K retrieved document chunks (default: `5`, range: 1–50).
 - `RAG_SIMILARITY_THRESHOLD`: Minimum cosine similarity score threshold (default: `0.5`, range: 0.0–1.0).
 
 ---
@@ -393,7 +393,7 @@ Operational Documents (Markdown, Runbooks, PDF, YAML, JSON)
 - **`MockEmbeddingProvider`**: Deterministic, offline unit vector generator based on text hashing. Ideal for reproducible automated testing and local CI/CD with zero external model dependencies.
 
 ### 2. Persistent Vector Database (`ChromaVectorStore`)
-- Built on **ChromaDB** using `PersistentClient` for on-disk persistence (default: `.devops_ai/vector_store`) and `EphemeralClient` for testing (`persist_directory=":memory:"`).
+- Built on **ChromaDB** using `PersistentClient` for on-disk persistence (default: `./data/vector_store`) and `EphemeralClient` for testing (`persist_directory=":memory:"`).
 - **HNSW Cosine Space**: Configured with `metadata={"hnsw:space": "cosine"}`. ChromaDB returns cosine distance ($d \in [0, 2]$); the store transforms this into standard cosine similarity:
   $$\text{Similarity} = \max\left(0.0, \min\left(1.0, 1.0 - \text{distance}\right)\right)$$
 - **Metadata Sanitization & Idempotency**: Automatically sanitizes complex metadata into primitives (`str`, `int`, `float`, `bool`) and ensures upsert idempotency via deterministic chunk IDs (`CHK-<doc_id>-<index:04d>`).
@@ -440,7 +440,7 @@ from devops_ai.agents.models import AgentTask, AgentContext
 
 # 1. Initialize embeddings and vector store
 provider = OllamaEmbeddingProvider(model="nomic-embed-text", dimension=768)
-store = ChromaVectorStore(persist_directory=".devops_ai/vector_store", dimension=768)
+store = ChromaVectorStore(persist_directory="./data/vector_store", dimension=768)
 
 # 2. Ingest operational runbooks
 pipeline = DocumentIngestionPipeline(embedding_provider=provider, vector_store=store)

@@ -139,6 +139,7 @@ class DocumentIngestionPipeline:
         root_obj = Path(allowed_root) if allowed_root else None
 
         registered_hash: Optional[str] = None
+        doc_id: Optional[str] = None
         try:
             # 1. Path traversal & security checks
             resolved_path = self._validate_path_security(path_obj, root_obj)
@@ -220,6 +221,17 @@ class DocumentIngestionPipeline:
             # 7. Generate embeddings and index chunks into vector store (if configured)
             indexing_meta = self._index_chunks(chunks)
 
+            # 8. Purge obsolete chunks originating from prior versions of this file path
+            if self.vector_store is not None:
+                purged = self.vector_store.delete_by_source_path(
+                    source_path=str(resolved_path),
+                    exclude_document_id=doc_id,
+                )
+                if purged > 0:
+                    self.logger.debug(
+                        f"Purged {purged} obsolete chunks for source file '{resolved_path.name}'"
+                    )
+
             self.logger.info(
                 f"Ingested document '{resolved_path.name}' ({doc_id}) into {len(chunks)} chunks "
                 f"({len(normalized_text)} chars)"
@@ -253,6 +265,13 @@ class DocumentIngestionPipeline:
         ) as e:
             if registered_hash:
                 self.preprocessor.unregister_hash(registered_hash)
+            if doc_id and self.vector_store:
+                try:
+                    self.vector_store.delete_document(doc_id)
+                except Exception as cleanup_err:
+                    self.logger.warning(
+                        f"Failed to cleanup vectors for document '{doc_id}': {cleanup_err}"
+                    )
             self.logger.error(f"Ingestion error on '{path_obj}': {e}")
             if raise_on_error:
                 raise
@@ -265,6 +284,13 @@ class DocumentIngestionPipeline:
         except Exception as e:
             if registered_hash:
                 self.preprocessor.unregister_hash(registered_hash)
+            if doc_id and self.vector_store:
+                try:
+                    self.vector_store.delete_document(doc_id)
+                except Exception as cleanup_err:
+                    self.logger.warning(
+                        f"Failed to cleanup vectors for document '{doc_id}': {cleanup_err}"
+                    )
             self.logger.error(f"Unexpected error ingesting '{path_obj}': {e}")
             if raise_on_error:
                 raise DocumentIngestionError(
@@ -314,60 +340,118 @@ class DocumentIngestionPipeline:
         source_name: str,
         format: DocumentFormat = DocumentFormat.TEXT,
         custom_metadata: Optional[Dict[str, Any]] = None,
+        raise_on_error: bool = False,
     ) -> IngestionResult:
         """Directly ingest an in-memory text payload as a document."""
-        normalized_text, preprocessor_metrics = self.preprocessor.preprocess(content)
-        if preprocessor_metrics.get("is_empty", False):
-            return IngestionResult(
-                source_path=source_name,
-                status=IngestionStatus.SKIPPED,
-                error="Document text is empty",
-            )
+        registered_hash: Optional[str] = None
+        doc_id: Optional[str] = None
+        source_uri = f"memory://{source_name}"
+        try:
+            normalized_text, preprocessor_metrics = self.preprocessor.preprocess(content)
+            if preprocessor_metrics.get("is_empty", False):
+                return IngestionResult(
+                    source_path=source_name,
+                    status=IngestionStatus.SKIPPED,
+                    error="Document text is empty",
+                )
 
-        content_hash = preprocessor_metrics["content_hash"]
-        if self.skip_duplicates and self.preprocessor.is_duplicate(content_hash):
-            return IngestionResult(
-                source_path=source_name,
-                status=IngestionStatus.SKIPPED,
+            content_hash = preprocessor_metrics["content_hash"]
+            if self.skip_duplicates and self.preprocessor.is_duplicate(content_hash):
+                return IngestionResult(
+                    source_path=source_name,
+                    status=IngestionStatus.SKIPPED,
+                    content_hash=content_hash,
+                    error="Duplicate text content detected",
+                )
+
+            self.preprocessor.register_hash(content_hash)
+            registered_hash = content_hash
+            doc_id = f"DOC-{content_hash[:12].upper()}"
+
+            meta = DocumentMetadata(
+                source_filename=source_name,
+                source_format=format,
+                source_path=source_uri,
                 content_hash=content_hash,
-                error="Duplicate text content detected",
+                file_size_bytes=len(content.encode("utf-8")),
+                character_count=len(normalized_text),
+                custom_attributes=custom_metadata or {},
+            )
+            source_doc = SourceDocument(
+                document_id=doc_id,
+                raw_content=normalized_text,
+                metadata=meta,
             )
 
-        self.preprocessor.register_hash(content_hash)
-        doc_id = f"DOC-{content_hash[:12].upper()}"
+            chunks = self.chunker.chunk_document(source_doc)
+            indexing_meta = self._index_chunks(chunks)
 
-        meta = DocumentMetadata(
-            source_filename=source_name,
-            source_format=format,
-            source_path=f"memory://{source_name}",
-            content_hash=content_hash,
-            file_size_bytes=len(content.encode("utf-8")),
-            character_count=len(normalized_text),
-            custom_attributes=custom_metadata or {},
-        )
-        source_doc = SourceDocument(
-            document_id=doc_id,
-            raw_content=normalized_text,
-            metadata=meta,
-        )
+            # Purge obsolete chunks originating from prior in-memory versions of this source
+            if self.vector_store is not None:
+                self.vector_store.delete_by_source_path(
+                    source_path=source_uri,
+                    exclude_document_id=doc_id,
+                )
 
-        chunks = self.chunker.chunk_document(source_doc)
-        indexing_meta = self._index_chunks(chunks)
+            result_metadata: Dict[str, Any] = {
+                "in_memory": True,
+                "character_count": len(normalized_text),
+                "has_code_blocks": preprocessor_metrics.get("has_code_blocks", False),
+            }
+            if indexing_meta:
+                result_metadata.update(indexing_meta)
 
-        result_metadata: Dict[str, Any] = {
-            "in_memory": True,
-            "character_count": len(normalized_text),
-            "has_code_blocks": preprocessor_metrics.get("has_code_blocks", False),
-        }
-        if indexing_meta:
-            result_metadata.update(indexing_meta)
-
-        return IngestionResult(
-            document_id=doc_id,
-            source_path=f"memory://{source_name}",
-            status=IngestionStatus.SUCCESS,
-            chunks=chunks,
-            total_chunks=len(chunks),
-            content_hash=content_hash,
-            metadata=result_metadata,
-        )
+            return IngestionResult(
+                document_id=doc_id,
+                source_path=source_uri,
+                status=IngestionStatus.SUCCESS,
+                chunks=chunks,
+                total_chunks=len(chunks),
+                content_hash=content_hash,
+                metadata=result_metadata,
+            )
+        except (
+            DocumentSecurityError,
+            DocumentSizeLimitError,
+            DocumentFormatError,
+            DocumentIngestionError,
+            VectorStoreError,
+            EmbeddingProviderError,
+        ) as e:
+            if registered_hash:
+                self.preprocessor.unregister_hash(registered_hash)
+            if doc_id and self.vector_store:
+                try:
+                    self.vector_store.delete_document(doc_id)
+                except Exception as cleanup_err:
+                    self.logger.warning(
+                        f"Failed to cleanup vectors for in-memory document '{doc_id}': {cleanup_err}"
+                    )
+            self.logger.error(f"Ingestion error on text '{source_name}': {e}")
+            if raise_on_error:
+                raise
+            return IngestionResult(
+                source_path=source_uri,
+                status=IngestionStatus.FAILED,
+                error=str(e),
+                metadata={"error_type": type(e).__name__},
+            )
+        except Exception as e:
+            if registered_hash:
+                self.preprocessor.unregister_hash(registered_hash)
+            if doc_id and self.vector_store:
+                try:
+                    self.vector_store.delete_document(doc_id)
+                except Exception as cleanup_err:
+                    self.logger.warning(
+                        f"Failed to cleanup vectors for in-memory document '{doc_id}': {cleanup_err}"
+                    )
+            self.logger.error(f"Unexpected error ingesting text '{source_name}': {e}")
+            if raise_on_error:
+                raise DocumentIngestionError(f"Unexpected failure: {e}", source=source_uri) from e
+            return IngestionResult(
+                source_path=source_uri,
+                status=IngestionStatus.FAILED,
+                error=f"Unexpected error: {e}",
+                metadata={"error_type": "UnexpectedException"},
+            )

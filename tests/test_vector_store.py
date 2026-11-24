@@ -224,3 +224,115 @@ def test_get_vector_store_factory(tmp_path: Path):
     with pytest.raises(VectorStoreError) as exc_info:
         get_vector_store(backend="unsupported_store")
     assert "Unsupported vector store backend" in str(exc_info.value)
+
+
+def test_chroma_model_and_dimension_validation(tmp_path: Path):
+    """Verify ChromaVectorStore enforces embedding model identity and vector dimensionality."""
+    store_dir = tmp_path / "model_dim_test"
+
+    # 1. Correct model and dimension: initialization succeeds and stores metadata
+    store = ChromaVectorStore(
+        persist_directory=store_dir,
+        collection_name="col_valid",
+        dimension=128,
+        embedding_model="nomic-embed-text",
+    )
+    assert store.dimension == 128
+    assert store.embedding_model == "nomic-embed-text"
+    del store
+
+    # 2. Persistence and reopening with correct model and dimension succeeds
+    store_reopen = ChromaVectorStore(
+        persist_directory=store_dir,
+        collection_name="col_valid",
+        dimension=128,
+        embedding_model="nomic-embed-text",
+    )
+    assert store_reopen.count() == 0
+    del store_reopen
+
+    # 3. Incorrect dimension raises EmbeddingDimensionMismatchError
+    with pytest.raises(EmbeddingDimensionMismatchError) as exc_dim:
+        ChromaVectorStore(
+            persist_directory=store_dir,
+            collection_name="col_valid",
+            dimension=256,
+            embedding_model="nomic-embed-text",
+        )
+    assert exc_dim.value.expected == 256
+    assert exc_dim.value.actual == 128
+
+    # 4. Different model with same dimension raises VectorStoreError
+    with pytest.raises(VectorStoreError) as exc_model:
+        ChromaVectorStore(
+            persist_directory=store_dir,
+            collection_name="col_valid",
+            dimension=128,
+            embedding_model="different-embedding-model",
+        )
+    assert "different-embedding-model" in str(exc_model.value)
+
+    # 5. Existing collection with missing metadata raises VectorStoreError
+    import chromadb
+
+    client = chromadb.PersistentClient(path=str(store_dir))
+    client.create_collection(name="legacy_no_meta", metadata={"hnsw:space": "cosine"})
+
+    with pytest.raises(VectorStoreError) as exc_meta:
+        ChromaVectorStore(
+            persist_directory=store_dir,
+            collection_name="legacy_no_meta",
+            dimension=128,
+            embedding_model="nomic-embed-text",
+        )
+    assert "lacks required embedding metadata" in str(exc_meta.value)
+
+
+def test_chroma_delete_by_source_path():
+    """Verify delete_by_source_path correctly purges chunks while respecting exclude_document_id."""
+    store = ChromaVectorStore(
+        persist_directory=":memory:",
+        collection_name="test_del_by_path",
+        dimension=4,
+    )
+
+    # Ingest 2 chunks for /docs/runbook.md under DOC-V1
+    c1 = _create_sample_chunk("CHK-1", "DOC-V1", "Runbook step 1")
+    c1.metadata["source_path"] = "/docs/runbook.md"
+    c2 = _create_sample_chunk("CHK-2", "DOC-V1", "Runbook step 2")
+    c2.metadata["source_path"] = "/docs/runbook.md"
+
+    # Ingest 1 chunk for /docs/runbook.md under DOC-V2 (replacement)
+    c3 = _create_sample_chunk("CHK-3", "DOC-V2", "Runbook updated step")
+    c3.metadata["source_path"] = "/docs/runbook.md"
+
+    # Ingest 1 chunk for a DIFFERENT file /other/runbook.md under DOC-OTHER
+    c4 = _create_sample_chunk("CHK-4", "DOC-OTHER", "Other runbook")
+    c4.metadata["source_path"] = "/other/runbook.md"
+
+    store.add_chunks(
+        chunks=[c1, c2, c3, c4],
+        embeddings=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    )
+    assert store.count() == 4
+
+    # Delete chunks for /docs/runbook.md excluding DOC-V2
+    deleted = store.delete_by_source_path(
+        source_path="/docs/runbook.md",
+        exclude_document_id="DOC-V2",
+    )
+    assert deleted == 2  # CHK-1 and CHK-2 deleted
+    assert store.count() == 2
+    assert store.get_chunk("CHK-1") is None
+    assert store.get_chunk("CHK-2") is None
+    assert store.get_chunk("CHK-3") is not None
+    assert store.get_chunk("CHK-4") is not None
+
+    # Delete all chunks for /other/runbook.md without exclusion
+    del_other = store.delete_by_source_path(source_path="/other/runbook.md")
+    assert del_other == 1
+    assert store.count() == 1
+    assert store.get_chunk("CHK-3") is not None
+
+    # Deleting non-existent source path returns 0
+    assert store.delete_by_source_path(source_path="/non/existent.md") == 0

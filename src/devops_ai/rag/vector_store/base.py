@@ -39,6 +39,23 @@ class BaseVectorStore(ABC):
         """
 
     @abstractmethod
+    def delete_by_source_path(
+        self,
+        source_path: str,
+        exclude_document_id: Optional[str] = None,
+    ) -> int:
+        """Delete all chunks originating from the given canonical source path.
+
+        Args:
+            source_path: Canonical filesystem path or URI of the source document.
+            exclude_document_id: Optional document ID to preserve (e.g. when replacing
+                an older version with a newly indexed version).
+
+        Returns:
+            Number of chunks removed.
+        """
+
+    @abstractmethod
     def get_chunk(self, chunk_id: str) -> Optional[DocumentChunk]:
         """Retrieve a specific chunk by its deterministic identifier."""
 
