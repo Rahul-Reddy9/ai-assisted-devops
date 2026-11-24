@@ -11,6 +11,7 @@ DevOps AI is an enterprise-grade AI-assisted DevOps engineering suite designed t
 - **Read-Only Infrastructure Monitoring**: Graceful, non-mutating inspection of Docker containers and Kubernetes workloads (Deployments, Pods, Services) with offline resilience.
 - **Log Anomaly Detection**: Pure-Python sliding-window temporal burst detection and machine-learning Isolation Forest anomaly identification.
 - **Autonomous AI Agent Architecture**: Extensible agent lifecycle (`BaseAgent`), multi-agent coordination (`AgentOrchestrator`), sequential pipelining with fact accumulation, broadcast routing, strict read-only safety boundary, and zero automated execution hooks.
+- **RAG Document Ingestion & Chunking**: Modular ingestion pipeline for Markdown, Plain Text, PDF, JSON, and YAML with structure-aware chunking, code block preservation, secret scrubbing, and deduplication.
 - **Turnkey Grafana Integration**: Pre-provisioned Grafana dashboards and Prometheus datasource configurations.
 - **Unified CLI**: Developer-friendly CLI built on Typer and Rich with error handling, markup escaping, and comprehensive credential redaction.
 
@@ -274,6 +275,73 @@ A reference implementation is included out-of-the-box:
 - Evaluates raw diagnostic context, container exit codes (e.g. exit code 137 / OOMKilled), and log burst alerts.
 - Produces structured findings with identified anomalies, severity assessments, and advisory remediation steps.
 - Operates reliably both with live LLMs and offline via rule-based deterministic fallback.
+
+---
+
+## RAG Document Ingestion & Chunking Subsystem (Phase 5 Commit 2)
+
+DevOps AI includes a modular document ingestion, normalization, and chunking subsystem designed to prepare operational knowledge, incident runbooks, architecture diagrams, and system configurations for semantic retrieval and vector indexing.
+
+### Architecture & Processing Lifecycle
+```
+Raw Documents (.md, .txt, .pdf, .json, .yaml)
+               │
+               ▼
+   [ Format Extractors ]  ──► Validates extensions, enforces file size limits, safe parsing
+               │
+               ▼
+   [ Text Preprocessor ] ──► Normalizes CRLF, strips control bytes, scrubs secrets, SHA-256 hash
+               │
+               ▼
+   [ Smart Chunker ]     ──► Preserves markdown code blocks, sentence/paragraph splits, overlap
+               │
+               ▼
+    List[DocumentChunk]   ──► Deterministic IDs, indexed chunks, rich provenance metadata
+```
+
+### Supported Document Formats
+| Format | Extensions | Extractor Details |
+|---|---|---|
+| **Markdown** | `.md`, `.markdown` | Extracts document title from top-level header (`# Title`), preserves tables, lists, and code blocks. |
+| **Plain Text** | `.txt`, `.text` | UTF-8 / UTF-8-sig safe text extraction. |
+| **PDF** | `.pdf` | Multi-page text extraction via `pypdf`, extracts metadata (`/Title`), rejects encrypted PDFs. |
+| **JSON** | `.json` | Safe parser (`json.loads`), normalizes formatting with 2-space indentation, tracks key counts. |
+| **YAML** | `.yaml`, `.yml` | Safe parser (`yaml.safe_load_all`), supports multi-document streams, tracks document counts. |
+
+Executable and script extensions (`.exe`, `.sh`, `.py`, `.bin`, `.dll`, `.bat`, etc.) are strictly prohibited and rejected prior to processing.
+
+### Intelligent Chunking Strategy (`SmartChunker`)
+- **Structure-Aware Splitting**: Groups text into semantic paragraph and code block units. Fenced code blocks (` ```...``` `) are kept together as atomic blocks whenever they fit within `chunk_size`.
+- **Configurable Size & Overlap**: Default `chunk_size=1000` characters with `chunk_overlap=150` characters.
+- **Safe Oversized Partitioning**: Blocks larger than `chunk_size` are sub-split along line breaks (for code) or sentence boundaries (`. `, `? `, `! `) without data loss or truncation.
+- **Deterministic Identifiers**: Generates stable chunk IDs formatted as `CHK-<doc_id>-<chunk_index:04d>` with synchronized `total_chunks` and content hashes.
+
+### Security & Defensive Controls
+- **Strict Read-Only Execution**: The subsystem operates in a strictly passive, read-only manner with no filesystem mutation outside transient processing.
+- **Path Traversal Defense**: All input paths are resolved and validated. Traversals containing `..` or escaping an optional `allowed_root` directory raise `DocumentSecurityError`.
+- **File Size & Input Limits**: Enforces configurable `rag_max_file_size_bytes` (default: 10MB) to prevent memory exhaustion or zip-bomb style denial of service.
+- **Passive Untrusted Context**: Document content is treated purely as untrusted data. Embedded instructions (e.g. `<SYSTEM_MANDATE>`) or commands (`rm -rf`, `kubectl delete`) are never executed.
+- **Automated Secret Scrubbing**: Credentials, API tokens, passwords, and bearer keys within operational documents are scrubbed prior to chunk generation.
+
+### Example Usage
+```python
+from pathlib import Path
+from devops_ai.rag import DocumentIngestionPipeline, DocumentFormat
+
+# Initialize pipeline with custom chunk parameters
+pipeline = DocumentIngestionPipeline(chunk_size=800, chunk_overlap=100)
+
+# Ingest an incident runbook
+result = pipeline.ingest_file(
+    file_path=Path("docs/runbooks/database_failover.md"),
+    allowed_root=Path("docs"),
+    custom_metadata={"service": "payment-db", "tier": "critical"},
+)
+
+print(f"Ingested {result.total_chunks} chunks for doc: {result.document_id}")
+for chunk in result.chunks:
+    print(f"Chunk {chunk.chunk_index}: {len(chunk.content)} chars (has_code={chunk.metadata['has_code_block']})")
+```
 
 ---
 

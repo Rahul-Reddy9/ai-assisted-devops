@@ -125,3 +125,70 @@ class AgentNotFoundError(AgentError):
             code="AGENT_NOT_FOUND",
         )
         self.agent_name = agent_name
+
+
+# =====================================================================
+# RAG Subsystem Exceptions (Phase 5 Commit 2)
+# =====================================================================
+
+
+class RAGError(DevOpsAIError):
+    """Base exception for all RAG document ingestion and chunking errors."""
+
+    def __init__(self, message: str, code: str = "RAG_ERROR") -> None:
+        super().__init__(message, code=code)
+
+
+class DocumentIngestionError(RAGError):
+    """Raised when document ingestion or file reading fails."""
+
+    def __init__(self, message: str, source: str = "unknown") -> None:
+        super().__init__(
+            f"Document ingestion failed for '{source}': {message}",
+            code="DOCUMENT_INGESTION_ERROR",
+        )
+        self.source = source
+
+
+class DocumentFormatError(RAGError):
+    """Raised when an unsupported or malformed document format is encountered."""
+
+    def __init__(self, message: str, format_type: str = "unknown") -> None:
+        super().__init__(
+            f"Unsupported or malformed document format '{format_type}': {message}",
+            code="DOCUMENT_FORMAT_ERROR",
+        )
+        self.format_type = format_type
+
+
+class DocumentSizeLimitError(RAGError):
+    """Raised when a document exceeds configured file size or length bounds."""
+
+    def __init__(self, message: str, size: int = 0, limit: int = 0) -> None:
+        super().__init__(
+            f"Document size limit exceeded ({size} bytes > {limit} bytes limit): {message}",
+            code="DOCUMENT_SIZE_LIMIT_ERROR",
+        )
+        self.size = size
+        self.limit = limit
+
+
+class DocumentSecurityError(RAGError):
+    """Raised when path traversal or unauthorized document access is detected."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            f"Document security boundary violation: {message}",
+            code="DOCUMENT_SECURITY_ERROR",
+        )
+
+
+class ChunkingError(RAGError):
+    """Raised when document splitting or chunk generation encounters an error."""
+
+    def __init__(self, message: str, doc_id: str = "unknown") -> None:
+        super().__init__(
+            f"Chunking error on document '{doc_id}': {message}",
+            code="CHUNKING_ERROR",
+        )
+        self.doc_id = doc_id

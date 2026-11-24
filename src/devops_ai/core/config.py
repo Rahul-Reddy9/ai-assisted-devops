@@ -3,7 +3,7 @@
 """Type-safe configuration management using Pydantic Settings."""
 
 from functools import lru_cache
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -143,6 +143,30 @@ class Settings(BaseSettings):
         ge=500,
         le=100000,
         description="Maximum character limit for untrusted external agent context inputs",
+    )
+
+    # RAG Document Ingestion Configuration (Phase 5 Commit 2)
+    rag_max_file_size_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        le=100 * 1024 * 1024,
+        description="Maximum allowed file size in bytes for RAG document ingestion (default: 10MB)",
+    )
+    rag_chunk_size: int = Field(
+        default=1000,
+        ge=100,
+        le=10000,
+        description="Default character size per document chunk",
+    )
+    rag_chunk_overlap: int = Field(
+        default=150,
+        ge=0,
+        le=1000,
+        description="Default character overlap between consecutive chunks",
+    )
+    rag_allowed_formats: List[str] = Field(
+        default=[".md", ".txt", ".pdf", ".json", ".yaml", ".yml"],
+        description="Allowed file extensions for RAG document ingestion",
     )
 
     @field_validator("ollama_host")
