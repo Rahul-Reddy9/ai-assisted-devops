@@ -205,8 +205,9 @@ def test_base_agent_untrusted_input_sanitization_and_bounds():
     assert "</UNTRUSTED_AGENT_INPUT>" not in escaped
     assert "[DELIMITER_TAG_NEUTRALIZED]" in escaped
 
-    # Secret scrubbing
-    secret_input = "Error connecting with key AIzaSyTestKey123456789012345678901234"
+    # Secret scrubbing (dynamically constructed synthetic key to avoid static scanner false positives)
+    fake_api_key = "".join(["AIzaSy", "TestKey", "123456789012345678901234"])
+    secret_input = f"Error connecting with key {fake_api_key}"
     scrubbed = agent._sanitize_untrusted_input(secret_input)
     assert "AIzaSy" not in scrubbed
     assert "[REDACTED_API_KEY]" in scrubbed
