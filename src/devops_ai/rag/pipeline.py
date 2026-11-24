@@ -11,11 +11,15 @@ from devops_ai.core.exceptions import (
     DocumentIngestionError,
     DocumentSecurityError,
     DocumentSizeLimitError,
+    EmbeddingProviderError,
+    VectorStoreError,
 )
 from devops_ai.core.logging import get_logger
 from devops_ai.rag.chunker import SmartChunker
+from devops_ai.rag.embeddings.base import BaseEmbeddingProvider
 from devops_ai.rag.extractors import get_extractor
 from devops_ai.rag.models import (
+    DocumentChunk,
     DocumentFormat,
     DocumentMetadata,
     IngestionResult,
@@ -23,6 +27,7 @@ from devops_ai.rag.models import (
     SourceDocument,
 )
 from devops_ai.rag.preprocessor import DocumentPreprocessor
+from devops_ai.rag.vector_store.base import BaseVectorStore
 
 logger = get_logger("rag.pipeline")
 
@@ -38,6 +43,8 @@ class DocumentIngestionPipeline:
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         skip_duplicates: bool = True,
+        embedding_provider: Optional[BaseEmbeddingProvider] = None,
+        vector_store: Optional[BaseVectorStore] = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.max_file_size_bytes = (
@@ -54,7 +61,36 @@ class DocumentIngestionPipeline:
         self.preprocessor = DocumentPreprocessor()
         self.chunker = SmartChunker(chunk_size=c_size, chunk_overlap=c_overlap)
         self.skip_duplicates = skip_duplicates
+        self.embedding_provider = embedding_provider
+        self.vector_store = vector_store
         self.logger = get_logger("rag.pipeline")
+
+    def _index_chunks(self, chunks: List[DocumentChunk]) -> Dict[str, Any]:
+        """Generate vector embeddings and index chunks into vector store if configured."""
+        if not chunks or self.vector_store is None or self.embedding_provider is None:
+            return {}
+
+        texts = [chunk.content for chunk in chunks]
+        batch_size = self.settings.rag_embedding_batch_size
+        all_embeddings: List[List[float]] = []
+
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i : i + batch_size]
+            batch_embeddings = self.embedding_provider.embed_batch(batch_texts)
+            all_embeddings.extend(batch_embeddings)
+
+        self.vector_store.add_chunks(chunks=chunks, embeddings=all_embeddings)
+        return {
+            "indexed_chunks": len(chunks),
+            "vector_store": getattr(
+                self.vector_store, "store_name", type(self.vector_store).__name__
+            ),
+            "embedding_provider": getattr(
+                self.embedding_provider,
+                "provider_name",
+                type(self.embedding_provider).__name__,
+            ),
+        }
 
     def _validate_path_security(
         self,
@@ -102,6 +138,7 @@ class DocumentIngestionPipeline:
         path_obj = Path(file_path)
         root_obj = Path(allowed_root) if allowed_root else None
 
+        registered_hash: Optional[str] = None
         try:
             # 1. Path traversal & security checks
             resolved_path = self._validate_path_security(path_obj, root_obj)
@@ -150,6 +187,7 @@ class DocumentIngestionPipeline:
                 )
 
             self.preprocessor.register_hash(content_hash)
+            registered_hash = content_hash
 
             # 5. Build SourceDocument model
             doc_format = DocumentFormat.from_extension(resolved_path.suffix)
@@ -179,10 +217,21 @@ class DocumentIngestionPipeline:
             # 6. Generate intelligent chunks
             chunks = self.chunker.chunk_document(source_doc)
 
+            # 7. Generate embeddings and index chunks into vector store (if configured)
+            indexing_meta = self._index_chunks(chunks)
+
             self.logger.info(
                 f"Ingested document '{resolved_path.name}' ({doc_id}) into {len(chunks)} chunks "
                 f"({len(normalized_text)} chars)"
             )
+
+            result_metadata: Dict[str, Any] = {
+                "file_size_bytes": file_size,
+                "character_count": len(normalized_text),
+                "has_code_blocks": preprocessor_metrics.get("has_code_blocks", False),
+            }
+            if indexing_meta:
+                result_metadata.update(indexing_meta)
 
             return IngestionResult(
                 document_id=doc_id,
@@ -191,11 +240,7 @@ class DocumentIngestionPipeline:
                 chunks=chunks,
                 total_chunks=len(chunks),
                 content_hash=content_hash,
-                metadata={
-                    "file_size_bytes": file_size,
-                    "character_count": len(normalized_text),
-                    "has_code_blocks": preprocessor_metrics.get("has_code_blocks", False),
-                },
+                metadata=result_metadata,
             )
 
         except (
@@ -203,7 +248,11 @@ class DocumentIngestionPipeline:
             DocumentSizeLimitError,
             DocumentFormatError,
             DocumentIngestionError,
+            VectorStoreError,
+            EmbeddingProviderError,
         ) as e:
+            if registered_hash:
+                self.preprocessor.unregister_hash(registered_hash)
             self.logger.error(f"Ingestion error on '{path_obj}': {e}")
             if raise_on_error:
                 raise
@@ -214,6 +263,8 @@ class DocumentIngestionPipeline:
                 metadata={"error_type": type(e).__name__},
             )
         except Exception as e:
+            if registered_hash:
+                self.preprocessor.unregister_hash(registered_hash)
             self.logger.error(f"Unexpected error ingesting '{path_obj}': {e}")
             if raise_on_error:
                 raise DocumentIngestionError(
@@ -301,6 +352,16 @@ class DocumentIngestionPipeline:
         )
 
         chunks = self.chunker.chunk_document(source_doc)
+        indexing_meta = self._index_chunks(chunks)
+
+        result_metadata: Dict[str, Any] = {
+            "in_memory": True,
+            "character_count": len(normalized_text),
+            "has_code_blocks": preprocessor_metrics.get("has_code_blocks", False),
+        }
+        if indexing_meta:
+            result_metadata.update(indexing_meta)
+
         return IngestionResult(
             document_id=doc_id,
             source_path=f"memory://{source_name}",
@@ -308,9 +369,5 @@ class DocumentIngestionPipeline:
             chunks=chunks,
             total_chunks=len(chunks),
             content_hash=content_hash,
-            metadata={
-                "in_memory": True,
-                "character_count": len(normalized_text),
-                "has_code_blocks": preprocessor_metrics.get("has_code_blocks", False),
-            },
+            metadata=result_metadata,
         )

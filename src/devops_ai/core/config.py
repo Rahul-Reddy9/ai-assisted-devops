@@ -175,6 +175,70 @@ class Settings(BaseSettings):
         description="Maximum allowed page count for PDF document ingestion (default: 500)",
     )
 
+    # Vector Embeddings and Retrieval Configuration (Phase 5 Commit 3)
+    rag_embedding_provider: str = Field(
+        default="ollama",
+        description="Vector embedding provider ('ollama', 'mock')",
+    )
+    rag_embedding_model: str = Field(
+        default="nomic-embed-text",
+        description="Model name for generating embeddings",
+    )
+    rag_embedding_dimension: int = Field(
+        default=768,
+        ge=16,
+        le=4096,
+        description="Expected vector embedding dimensionality",
+    )
+    rag_embedding_batch_size: int = Field(
+        default=32,
+        ge=1,
+        le=256,
+        description="Batch size for vector embedding generation",
+    )
+    rag_vector_store: str = Field(
+        default="chroma",
+        description="Vector storage backend ('chroma')",
+    )
+    rag_vector_store_path: str = Field(
+        default="./data/vector_store",
+        description="Directory path for persistent vector storage",
+    )
+    rag_retrieval_top_k: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description="Default count of retrieved chunks",
+    )
+    rag_similarity_threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity threshold for retrieval results",
+    )
+
+    @field_validator("rag_embedding_provider")
+    @classmethod
+    def validate_embedding_provider(cls, v: str) -> str:
+        allowed = {"ollama", "mock"}
+        lowered = v.strip().lower()
+        if lowered not in allowed:
+            raise ValueError(
+                f"Unsupported embedding provider '{v}'. Allowed providers: {sorted(allowed)}"
+            )
+        return lowered
+
+    @field_validator("rag_vector_store")
+    @classmethod
+    def validate_vector_store(cls, v: str) -> str:
+        allowed = {"chroma"}
+        lowered = v.strip().lower()
+        if lowered not in allowed:
+            raise ValueError(
+                f"Unsupported vector store backend '{v}'. Allowed backends: {sorted(allowed)}"
+            )
+        return lowered
+
     @field_validator("ollama_host")
     @classmethod
     def validate_ollama_host(cls, v: str) -> str:

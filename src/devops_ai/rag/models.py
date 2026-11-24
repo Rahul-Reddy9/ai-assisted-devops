@@ -126,3 +126,24 @@ class IngestionResult(BaseModel):
         default_factory=dict,
         description="Diagnostic or ingestion metadata",
     )
+
+
+class RetrievalResult(BaseModel):
+    """A scored document chunk retrieved via semantic similarity search."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_id: str = Field(min_length=1, description="Deterministic unique identifier of the chunk")
+    document_id: str = Field(min_length=1, description="Identifier of the parent source document")
+    source_filename: str = Field(min_length=1, description="Basename of the source document")
+    source_path: str = Field(min_length=1, description="Source file path or logical URI")
+    chunk_index: int = Field(ge=0, description="0-based index of this chunk within the document")
+    total_chunks: int = Field(ge=1, description="Total number of chunks in the source document")
+    content: str = Field(min_length=1, description="Extracted and normalized chunk text")
+    similarity_score: float = Field(
+        ge=0.0, le=1.0, description="Normalized cosine similarity score in range [0.0, 1.0]"
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Chunk-level metadata including provenance and boundaries",
+    )

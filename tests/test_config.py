@@ -22,6 +22,14 @@ def test_default_settings():
     assert settings.burst_threshold == 3
     assert settings.burst_window_seconds == 30
     assert settings.rag_max_pdf_pages == 500
+    assert settings.rag_embedding_provider == "ollama"
+    assert settings.rag_embedding_model == "nomic-embed-text"
+    assert settings.rag_embedding_dimension == 768
+    assert settings.rag_embedding_batch_size == 32
+    assert settings.rag_vector_store == "chroma"
+    assert settings.rag_vector_store_path == "./data/vector_store"
+    assert settings.rag_retrieval_top_k == 5
+    assert settings.rag_similarity_threshold == 0.5
 
 
 def test_custom_settings_via_env(mock_env):
@@ -62,3 +70,30 @@ def test_invalid_rag_max_pdf_pages():
         Settings(rag_max_pdf_pages=0)
     with pytest.raises(ValidationError):
         Settings(rag_max_pdf_pages=-10)
+
+
+def test_invalid_rag_embedding_and_vector_settings():
+    """Verify validation boundaries for embedding and vector store settings."""
+    with pytest.raises(ValidationError):
+        Settings(rag_embedding_provider="unsupported_provider")
+
+    with pytest.raises(ValidationError):
+        Settings(rag_vector_store="unsupported_store")
+
+    with pytest.raises(ValidationError):
+        Settings(rag_embedding_dimension=0)
+
+    with pytest.raises(ValidationError):
+        Settings(rag_embedding_dimension=-5)
+
+    with pytest.raises(ValidationError):
+        Settings(rag_embedding_batch_size=0)
+
+    with pytest.raises(ValidationError):
+        Settings(rag_retrieval_top_k=0)
+
+    with pytest.raises(ValidationError):
+        Settings(rag_similarity_threshold=-0.1)
+
+    with pytest.raises(ValidationError):
+        Settings(rag_similarity_threshold=1.5)

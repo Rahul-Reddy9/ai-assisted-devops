@@ -28,6 +28,10 @@ class DocumentPreprocessor:
         """Register a content hash into the seen deduplication registry."""
         self._seen_hashes.add(content_hash)
 
+    def unregister_hash(self, content_hash: str) -> None:
+        """Remove a content hash from the deduplication registry (e.g. on indexing rollback)."""
+        self._seen_hashes.discard(content_hash)
+
     def clear_registry(self) -> None:
         """Clear the deduplication registry."""
         self._seen_hashes.clear()

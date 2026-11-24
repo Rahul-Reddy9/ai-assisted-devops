@@ -17,9 +17,13 @@ from devops_ai.core.exceptions import (
     DocumentPageLimitError,
     DocumentSecurityError,
     DocumentSizeLimitError,
+    EmbeddingDimensionMismatchError,
+    EmbeddingProviderError,
     LLMProviderError,
     ObservabilityError,
     RAGError,
+    RetrievalError,
+    VectorStoreError,
 )
 from devops_ai.core.logging import get_logger, setup_logging
 
@@ -35,7 +39,11 @@ __all__ = [
     "DocumentPageLimitError",
     "DocumentSecurityError",
     "DocumentSizeLimitError",
+    "EmbeddingDimensionMismatchError",
+    "EmbeddingProviderError",
     "RAGError",
+    "RetrievalError",
+    "VectorStoreError",
     "Settings",
     "get_settings",
     "DevOpsAIError",

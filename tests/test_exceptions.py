@@ -7,9 +7,13 @@ from devops_ai.core.exceptions import (
     DevOpsAIError,
     DocumentPageLimitError,
     DocumentSizeLimitError,
+    EmbeddingDimensionMismatchError,
+    EmbeddingProviderError,
     LLMProviderError,
     ObservabilityError,
     RAGError,
+    RetrievalError,
+    VectorStoreError,
 )
 
 
@@ -97,3 +101,36 @@ def test_document_size_limit_error_remains_unaffected():
     assert "[DOCUMENT_SIZE_LIMIT_ERROR]" in error_str
     assert "Document size limit exceeded (2048 bytes > 1024 bytes limit)" in error_str
     assert "Raw payload exceeds threshold" in error_str
+
+
+def test_rag_vector_exceptions_hierarchy_and_formatting():
+    """Verify VectorStoreError, EmbeddingProviderError, and RetrievalError behavior."""
+    # VectorStoreError
+    vs_err = VectorStoreError("Connection to ChromaDB lost", store_name="chroma")
+    assert isinstance(vs_err, RAGError)
+    assert isinstance(vs_err, DevOpsAIError)
+    assert vs_err.code == "VECTOR_STORE_ERROR"
+    assert vs_err.store_name == "chroma"
+    assert "Vector store 'chroma' error: Connection to ChromaDB lost" in str(vs_err)
+
+    # EmbeddingDimensionMismatchError
+    dim_err = EmbeddingDimensionMismatchError("Vector rejected", expected=768, actual=384)
+    assert isinstance(dim_err, VectorStoreError)
+    assert isinstance(dim_err, RAGError)
+    assert dim_err.code == "EMBEDDING_DIMENSION_MISMATCH"
+    assert dim_err.expected == 768
+    assert dim_err.actual == 384
+    assert "expected 768, got 384" in str(dim_err)
+
+    # EmbeddingProviderError
+    emb_err = EmbeddingProviderError("Ollama daemon timeout", provider="ollama")
+    assert isinstance(emb_err, RAGError)
+    assert emb_err.code == "EMBEDDING_PROVIDER_ERROR"
+    assert emb_err.provider == "ollama"
+    assert "Embedding provider 'ollama' error: Ollama daemon timeout" in str(emb_err)
+
+    # RetrievalError
+    ret_err = RetrievalError("Query index syntax malformed")
+    assert isinstance(ret_err, RAGError)
+    assert ret_err.code == "RETRIEVAL_ERROR"
+    assert "Semantic retrieval error: Query index syntax malformed" in str(ret_err)

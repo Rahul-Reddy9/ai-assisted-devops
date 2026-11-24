@@ -211,3 +211,48 @@ class ChunkingError(RAGError):
             code="CHUNKING_ERROR",
         )
         self.doc_id = doc_id
+
+
+class VectorStoreError(RAGError):
+    """Raised when vector storage, indexing, or retrieval operations fail."""
+
+    def __init__(self, message: str, store_name: str = "unknown") -> None:
+        super().__init__(
+            f"Vector store '{store_name}' error: {message}",
+            code="VECTOR_STORE_ERROR",
+        )
+        self.store_name = store_name
+
+
+class EmbeddingDimensionMismatchError(VectorStoreError):
+    """Raised when embedding vector dimensionality does not match expected store dimensions."""
+
+    def __init__(self, message: str, expected: int = 0, actual: int = 0) -> None:
+        super().__init__(
+            f"Vector dimension mismatch (expected {expected}, got {actual}): {message}",
+            store_name="dimension_validator",
+        )
+        self.code = "EMBEDDING_DIMENSION_MISMATCH"
+        self.expected = expected
+        self.actual = actual
+
+
+class EmbeddingProviderError(RAGError):
+    """Raised when vector embedding generation fails or times out."""
+
+    def __init__(self, message: str, provider: str = "unknown") -> None:
+        super().__init__(
+            f"Embedding provider '{provider}' error: {message}",
+            code="EMBEDDING_PROVIDER_ERROR",
+        )
+        self.provider = provider
+
+
+class RetrievalError(RAGError):
+    """Raised when semantic similarity search or filtering operations fail."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            f"Semantic retrieval error: {message}",
+            code="RETRIEVAL_ERROR",
+        )
