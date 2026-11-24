@@ -10,6 +10,7 @@ DevOps AI is an enterprise-grade AI-assisted DevOps engineering suite designed t
 - **Structured Logging & Secret Scrubbing**: Standardized JSON formatting, ISO-8601 timestamps, and regex-based credential scrubbing across logs, terminal displays, and errors.
 - **Read-Only Infrastructure Monitoring**: Graceful, non-mutating inspection of Docker containers and Kubernetes workloads (Deployments, Pods, Services) with offline resilience.
 - **Log Anomaly Detection**: Pure-Python sliding-window temporal burst detection and machine-learning Isolation Forest anomaly identification.
+- **Autonomous AI Agent Architecture**: Extensible agent lifecycle (`BaseAgent`), multi-agent coordination (`AgentOrchestrator`), sequential pipelining with fact accumulation, broadcast routing, strict read-only safety boundary, and zero automated execution hooks.
 - **Turnkey Grafana Integration**: Pre-provisioned Grafana dashboards and Prometheus datasource configurations.
 - **Unified CLI**: Developer-friendly CLI built on Typer and Rich with error handling, markup escaping, and comprehensive credential redaction.
 
@@ -223,6 +224,56 @@ DevOps AI provides an autonomous two-tier incident investigation and remediation
 - Evidence is isolated inside `<UNTRUSTED_INCIDENT_EVIDENCE>` XML delimiters in prompts.
 - Models are strictly instructed to treat evidence as passive data and ignore any embedded directives or instruction overrides.
 - Automated secret scrubbing sanitizes API keys, passwords, and bearer tokens across prompts, outputs, logs, and diagnostic metadata.
+
+---
+
+## AI Agent Architecture & Multi-Agent Orchestration (Phase 5)
+
+DevOps AI provides an extensible, modular AI agent framework designed for production site reliability engineering diagnostics, multi-step investigation, and multi-agent coordination.
+
+### Core Architecture & Lifecycle
+All agent implementations inherit from `BaseAgent` and participate in an explicit state machine:
+$$\text{IDLE} \longrightarrow \text{PLANNING} \longrightarrow \text{EXECUTING} \longrightarrow \text{COMPLETED} \ / \ \text{FAILED}$$
+
+- **`BaseAgent`**: Abstract foundation managing lifecycle transitions, execution limits, untrusted context boundary sanitation, and integration with `LLMRouter`.
+- **`AgentLimits`**: Configurable per-agent constraints:
+  - `read_only`: Strict boolean defaulting to `True`. Instantiating an agent with `read_only=False` raises `AgentSecurityError`.
+  - `max_iterations`: Bounded reasoning/action loops (default: 10, range: 1–50).
+  - `timeout_seconds`: Wall-clock execution timeout in seconds (default: 60.0s).
+  - `max_input_chars`: Untrusted input character boundary (default: 16,000 characters).
+- **`AgentTask`**: Immutable assigned goal with task-specific context data, read-only validation, and optional timeout overrides.
+- **`AgentStep`**: Discrete reasoning or observation step tracking thought process, action, and diagnostic findings.
+- **`AgentResult`**: Structured output encompassing task status, concise executive summary, structured findings, complete step history, and execution metrics.
+- **`AgentContext`**: Shared context container maintaining step history, accumulated facts across agents, runtime variables, and scratchpad storage.
+
+### Orchestration Layer (`AgentOrchestrator`)
+The `AgentOrchestrator` coordinates agent registries, lifecycle resets, and task routing patterns:
+1. **Single Agent Dispatch (`dispatch`)**: Routes an `AgentTask` directly to a registered agent by name or falls back to the default registered agent.
+2. **Sequential Multi-Agent Pipelines (`run_pipeline`)**: Executes a sequence of agents where upstream outputs are chained into downstream context:
+   - Upstream findings are saved to `context.variables["<agent_name>_findings"]`.
+   - Extracted diagnostic facts are accumulated directly into `context.facts`.
+   - The pipeline aborts immediately if any agent fails, returning partial execution history.
+3. **Broadcast Execution (`broadcast`)**: Dispatches the same task in parallel or sequence across all registered agents and aggregates results.
+4. **Capability Search (`get_agents_by_capability`)**: Locates registered agents matching specific capabilities (e.g. `ANALYZE_LOGS`, `INCIDENT_DIAGNOSIS`).
+
+### LLM Router Integration & Fallback
+- Agents leverage `LLMRouter.generate_with_fallback(...)` directly for semantic reasoning and completion generation.
+- Respects provider timeouts, temperature overrides, and automatic failover between Ollama and Google Gemini.
+- Does not create redundant LLM client layers; standardizes on existing project provider infrastructure.
+- Provides graceful deterministic fallback if all configured LLM providers fail or are unreachable.
+
+### Strict Read-Only Safety Boundary & Zero-Execution Model
+- **Strict Read-Only by Default**: All agents operate in read-only diagnostic mode. Any attempt to initialize an agent with `read_only=False` or pass a mutating task raises `AgentSecurityError`.
+- **Prohibited Mutation Blocking**: Tasks or actions attempting destructive mutations (such as `rm -rf`, `kubectl delete`, `docker rm`, `DROP TABLE`, `kill -9`) are deterministically blocked prior to execution.
+- **Untrusted Context Boundary & Delimiter Neutralization**: All telemetry, logs, and external payloads are length-bounded and neutralized to prevent prompt injection or escape attempts.
+- **Automated Secret Scrubbing**: Passwords, API tokens, bearer keys, and sensitive environment variables are sanitized from agent prompts, step history, and output findings.
+- **Zero Execution Hooks**: Agent outputs and remediation recommendations are strictly advisory for human site reliability engineers. No automated command execution hooks exist.
+
+### Reference DevOps Diagnostic Agent (`DevOpsDiagnosticAgent`)
+A reference implementation is included out-of-the-box:
+- Evaluates raw diagnostic context, container exit codes (e.g. exit code 137 / OOMKilled), and log burst alerts.
+- Produces structured findings with identified anomalies, severity assessments, and advisory remediation steps.
+- Operates reliably both with live LLMs and offline via rule-based deterministic fallback.
 
 ---
 

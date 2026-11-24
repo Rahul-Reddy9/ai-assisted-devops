@@ -121,6 +121,30 @@ class Settings(BaseSettings):
         description="Optional override model identifier for Tier 2 AI investigation",
     )
 
+    # AI Agent Architecture Configuration (Phase 5)
+    agent_timeout_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        le=600.0,
+        description="Default timeout in seconds for agent task execution",
+    )
+    agent_max_iterations: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum reasoning/action iterations permitted per agent task",
+    )
+    agent_read_only_mode: bool = Field(
+        default=True,
+        description="Enforce strict read-only safety boundary across all agents",
+    )
+    agent_max_input_chars: int = Field(
+        default=16000,
+        ge=500,
+        le=100000,
+        description="Maximum character limit for untrusted external agent context inputs",
+    )
+
     @field_validator("ollama_host")
     @classmethod
     def validate_ollama_host(cls, v: str) -> str:
