@@ -33,6 +33,9 @@ def test_default_settings():
     assert settings.finops_default_currency == "USD"
     assert settings.finops_max_billing_file_size_bytes == 10 * 1024 * 1024
     assert settings.finops_max_records == 100000
+    assert settings.finops_idle_cpu_threshold_pct == 2.0
+    assert settings.finops_underutilized_cpu_threshold_pct == 15.0
+    assert settings.finops_idle_memory_threshold_pct == 15.0
 
 
 def test_custom_settings_via_env(mock_env):
@@ -109,10 +112,16 @@ def test_finops_settings_validation():
         finops_default_currency="EUR",
         finops_max_billing_file_size_bytes=20 * 1024 * 1024,
         finops_max_records=50000,
+        finops_idle_cpu_threshold_pct=3.5,
+        finops_underutilized_cpu_threshold_pct=20.0,
+        finops_idle_memory_threshold_pct=25.0,
     )
     assert custom.finops_default_currency == "EUR"
     assert custom.finops_max_billing_file_size_bytes == 20 * 1024 * 1024
     assert custom.finops_max_records == 50000
+    assert custom.finops_idle_cpu_threshold_pct == 3.5
+    assert custom.finops_underutilized_cpu_threshold_pct == 20.0
+    assert custom.finops_idle_memory_threshold_pct == 25.0
 
     # Invalid currency code length
     with pytest.raises(ValidationError):
@@ -131,3 +140,13 @@ def test_finops_settings_validation():
         Settings(finops_max_records=0)
     with pytest.raises(ValidationError):
         Settings(finops_max_records=1000001)
+
+    # Invalid threshold bounds
+    with pytest.raises(ValidationError):
+        Settings(finops_idle_cpu_threshold_pct=-1.0)
+    with pytest.raises(ValidationError):
+        Settings(finops_idle_cpu_threshold_pct=25.0)
+    with pytest.raises(ValidationError):
+        Settings(finops_underutilized_cpu_threshold_pct=60.0)
+    with pytest.raises(ValidationError):
+        Settings(finops_idle_memory_threshold_pct=60.0)

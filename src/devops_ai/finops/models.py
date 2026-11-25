@@ -198,6 +198,66 @@ class OptimizationRecommendation(BaseModel):
     recommended_specs: Optional[str] = Field(
         default=None, description="Proposed target specifications (e.g. t3.medium -> t3.small)"
     )
+    currency: str = Field(
+        default="USD", min_length=3, max_length=3, description="ISO 4217 3-letter currency code"
+    )
+    is_guaranteed: bool = Field(
+        default=False,
+        description="Whether savings are guaranteed (e.g. unattached orphan cleanup) vs estimated",
+    )
+
+    @property
+    def estimated_annual_savings(self) -> float:
+        """Calculate annualized savings from estimated monthly savings."""
+        return round(self.estimated_monthly_savings * 12.0, 2)
+
+
+class OptimizationSummary(BaseModel):
+    """Aggregated summary of infrastructure rightsizing and cost optimization recommendations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_monthly_savings: float = Field(
+        ge=0.0, description="Total potential monthly savings sum across all recommendations"
+    )
+    total_annual_savings: float = Field(
+        ge=0.0, description="Total potential annual savings sum across all recommendations"
+    )
+    guaranteed_monthly_savings: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Portion of monthly savings from guaranteed actions (e.g. orphan cleanup)",
+    )
+    estimated_monthly_savings: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Portion of monthly savings from estimated rightsizing",
+    )
+    currency: str = Field(
+        default="USD", min_length=3, max_length=3, description="ISO 4217 3-letter currency code"
+    )
+    recommendations_count: int = Field(
+        ge=0, description="Total count of optimization recommendations"
+    )
+    recommendations_by_action: Dict[str, int] = Field(
+        default_factory=dict, description="Count of recommendations grouped by action"
+    )
+    recommendations_by_risk: Dict[str, int] = Field(
+        default_factory=dict, description="Count of recommendations grouped by risk rating"
+    )
+    recommendations: List[OptimizationRecommendation] = Field(
+        default_factory=list, description="Detailed list of actionable recommendations"
+    )
+
+    @property
+    def guaranteed_annual_savings(self) -> float:
+        """Calculate annualized guaranteed savings from guaranteed monthly savings."""
+        return round(self.guaranteed_monthly_savings * 12.0, 2)
+
+    @property
+    def estimated_annual_savings(self) -> float:
+        """Calculate annualized estimated savings from estimated monthly savings."""
+        return round(self.estimated_monthly_savings * 12.0, 2)
 
 
 class AnomalySeverity(str, Enum):

@@ -14,7 +14,7 @@ DevOps AI is an enterprise-grade AI-assisted DevOps engineering suite designed t
 - **RAG Document Ingestion & Chunking**: Modular ingestion pipeline for Markdown, Plain Text, PDF, JSON, and YAML with structure-aware chunking, code block preservation, secret scrubbing, and deduplication.
 - **Vector Embeddings, Persistent Storage & Semantic Retrieval**: Pluggable embeddings (Ollama `nomic-embed-text`, deterministic offline Mock), persistent ChromaDB vector storage with cosine similarity conversion, provenance-preserving semantic retrieval, and agent grounding with untrusted context isolation.
 - **RAG Evaluation, Retrieval Quality & Observability**: Standard Information Retrieval metrics (Precision@K, Recall@K, MRR, nDCG@K), answer grounding and citation verification, decomposed query latency percentiles (embedding vs. search), built-in synthetic operational benchmark, and CLI quality gating for CI/CD pipelines.
-- **Cloud Cost & FinOps Optimization**: Provider-independent multi-cloud billing ingestion (AWS CUR, Azure Cost Export, GCP Billing, Standard format), multi-dimensional spend aggregation, time-series daily/monthly rollups, and strict currency mismatch validation.
+- **Cloud Cost & FinOps Optimization**: Provider-independent multi-cloud billing ingestion (AWS CUR, Azure Cost Export, GCP Billing, Standard format), multi-dimensional spend aggregation, time-series daily/monthly rollups, strict currency mismatch validation, and automated evidence-based rightsizing optimization (idle compute, underutilized instances, unattached storage, over-provisioned databases, orphaned static IPs).
 - **Turnkey Grafana Integration**: Pre-provisioned Grafana dashboards and Prometheus datasource configurations.
 - **Unified CLI**: Developer-friendly CLI built on Typer and Rich with error handling, markup escaping, and comprehensive credential redaction.
 
@@ -83,6 +83,9 @@ Key configuration settings:
 - `FINOPS_DEFAULT_CURRENCY`: Default 3-letter currency code for cost analysis (default: `USD`).
 - `FINOPS_MAX_BILLING_FILE_SIZE_BYTES`: Maximum billing file size for import (default: `10485760` / 10MB).
 - `FINOPS_MAX_RECORDS`: Maximum number of billing records to process per run (default: `100000`).
+- `FINOPS_IDLE_CPU_THRESHOLD_PCT`: Average CPU percentage below which an instance is considered idle (default: `2.0`).
+- `FINOPS_UNDERUTILIZED_CPU_THRESHOLD_PCT`: Average CPU percentage below which an instance is considered underutilized (default: `15.0`).
+- `FINOPS_IDLE_MEMORY_THRESHOLD_PCT`: Average memory percentage below which a database is considered underutilized (default: `15.0`).
 
 ---
 
@@ -198,6 +201,24 @@ devops-ai finops analyze --start-date 2026-11-01 --end-date 2026-11-20
 
 # Export structured cost analysis as JSON for pipelines and automation
 devops-ai finops analyze --file ./billing-data.csv --json
+
+# Run resource rightsizing optimization using built-in synthetic benchmark
+devops-ai finops optimize
+
+# Optimize custom resource inventory and utilization metrics
+devops-ai finops optimize --inventory-file ./resources.json --utilization-file ./telemetry.json
+
+# Filter recommendations by provider, resource category, or cloud region
+devops-ai finops optimize --provider aws
+devops-ai finops optimize --category compute
+devops-ai finops optimize --region us-east-1
+
+# Filter by minimum monthly savings threshold and maximum risk ceiling
+devops-ai finops optimize --min-savings 50.0 --risk LOW
+
+# Export optimization recommendations and savings summary to JSON
+devops-ai finops optimize --json
+devops-ai finops optimize --output optimization_report.json
 ```
 
 ---
@@ -626,6 +647,51 @@ for service, cost in summary.service_costs.items():
 ec2_records = analyzer.filter_records(records, service="AmazonEC2")
 ec2_summary = analyzer.summarize(ec2_records)
 print(f"EC2 Net Spend: {ec2_summary.currency} {ec2_summary.total_cost:.2f}")
+```
+
+### 5. Resource Utilization & Rightsizing Optimization (Commit 2)
+
+DevOps AI provides an automated, evidence-based resource optimization engine (`ResourceOptimizer`) designed to detect inefficient cloud infrastructure and formulate rightsizing recommendations:
+
+- **Supported Scenarios:**
+  1. **Idle Compute Instances (`TERMINATE`):** Identifies instances with average CPU $\le 2.0\%$ (configurable via `FINOPS_IDLE_CPU_THRESHOLD_PCT`), peak CPU $\le 5.0\%$, and negligible network I/O. Eliminates direct resource-level charges ($100\%$ elimination of instance cost). Categorized as estimated net invoice savings unless explicitly confirmed uncommitted, ensuring Reserved Instances or Savings Plans are not prematurely counted as net invoice reductions.
+  2. **Underutilized Compute Instances (`DOWNSIZE`):** Identifies active workloads with average CPU $\le 15.0\%$ (configurable via `FINOPS_UNDERUTILIZED_CPU_THRESHOLD_PCT`) and peak CPU $\le 40.0\%$. Projects $50\%$ monthly savings by recommending downsized machine profiles (e.g., `Standard_D8s_v5 -> Standard_D4s_v5`).
+  3. **Unattached Storage Volumes (`CLEANUP_ORPHAN`):** Identifies EBS volumes or managed disks detached from active compute workloads (`is_attached = False`) with zero read/write I/O. Categorized as guaranteed savings ($100\%$ volume cost elimination).
+  4. **Over-Provisioned Databases (`DOWNSIZE`):** Identifies relational databases (RDS, Cloud SQL) with average CPU $\le 10.0\%$ and memory $\le 15.0\%$, projecting $40\%$ monthly savings via maintenance-window tier downsizing.
+  5. **Orphaned Static Public IPs (`CLEANUP_ORPHAN`):** Identifies unassociated public IPv4 addresses incurring hourly idle reservation fees. Categorized as guaranteed savings.
+
+- **Financial Integrity & Confidence Scoring:**
+  - **Guaranteed vs. Estimated Savings:** Differentiates guaranteed savings (unattached storage and orphaned public IP cleanup where deletion directly halts billing) from estimated savings (instance and database tier downsizing, and compute terminations where cloud commitments may apply).
+  - **Annualized Savings Properties:** `OptimizationSummary` provides `guaranteed_annual_savings` and `estimated_annual_savings` alongside `total_annual_savings`.
+  - **Non-Negative Guard Rails:** Estimated monthly savings enforce non-negative bounds (`ge=0.0`).
+  - **Confidence Scores:** Calibrated between $0.0$ and $1.0$ based on telemetry duration and signal consistency.
+  - **Evidence Provenance:** Every recommendation includes an audit trail of factual telemetry metrics supporting the proposal.
+
+- **Python Programmatic Optimization:**
+```python
+from devops_ai.finops import (
+    ResourceOptimizer,
+    get_synthetic_resource_inventory,
+)
+
+# 1. Load resources and telemetry (or use get_synthetic_resource_inventory)
+resources, telemetry_map = get_synthetic_resource_inventory()
+
+# 2. Run rightsizing optimization
+optimizer = ResourceOptimizer()
+summary = optimizer.optimize_inventory(
+    resources=resources,
+    utilization_map=telemetry_map,
+    min_savings=25.0,  # Filter out small micro-savings
+)
+
+print(f"Total Potential Monthly Savings: {summary.currency} {summary.total_monthly_savings:.2f}")
+print(f"Total Potential Annual Savings: {summary.currency} {summary.total_annual_savings:.2f}")
+print(f"Guaranteed Savings: {summary.currency} {summary.guaranteed_monthly_savings:.2f}/mo (Annual: {summary.guaranteed_annual_savings:.2f})")
+print(f"Estimated Savings: {summary.currency} {summary.estimated_monthly_savings:.2f}/mo (Annual: {summary.estimated_annual_savings:.2f})")
+
+for rec in summary.recommendations:
+    print(f"[{rec.action.value}] {rec.resource_id} ({rec.service_name}): {summary.currency} {rec.estimated_monthly_savings:.2f}/mo (Confidence: {rec.confidence_score:.0%})")
 ```
 
 ---

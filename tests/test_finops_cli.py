@@ -165,3 +165,114 @@ def test_cli_finops_analyze_missing_file(tmp_path: Path):
     )
     assert result.exit_code == 1
     assert "Billing Data Error" in result.output
+
+
+def test_cli_finops_optimize_help():
+    res = runner.invoke(app, ["finops", "optimize", "--help"])
+    assert res.exit_code == 0
+    assert "--inventory-file" in res.output
+    assert "--utilization-file" in res.output
+    assert "--min-savings" in res.output
+    assert "--risk" in res.output
+
+
+def test_cli_finops_optimize_default_synthetic():
+    res = runner.invoke(app, ["finops", "optimize"])
+    assert res.exit_code == 0
+    assert "Cloud FinOps Rightsizing & Optimization Report" in res.output
+    assert "Total Potential Monthly Savings:" in res.output
+    assert "Guaranteed Savings" in res.output
+    assert "Estimated Savings" in res.output
+    assert "Actionable Optimization Recommendations" in res.output
+    assert "Advisory Notice:" in res.output
+
+
+def test_cli_finops_optimize_json():
+    res = runner.invoke(app, ["finops", "optimize", "--json"])
+    assert res.exit_code == 0
+    parsed = json.loads(res.output)
+    assert "total_monthly_savings" in parsed
+    assert "total_annual_savings" in parsed
+    assert "recommendations_count" in parsed
+    assert parsed["recommendations_count"] > 0
+    assert len(parsed["recommendations"]) == parsed["recommendations_count"]
+
+
+def test_cli_finops_optimize_filters():
+    # Filter by category storage
+    res_storage = runner.invoke(app, ["finops", "optimize", "--category", "storage", "--json"])
+    assert res_storage.exit_code == 0
+    parsed_storage = json.loads(res_storage.output)
+    assert parsed_storage["recommendations_count"] == 1
+    assert parsed_storage["recommendations"][0]["action"] == "CLEANUP_ORPHAN"
+
+    # Filter by min savings ($100/mo)
+    res_savings = runner.invoke(app, ["finops", "optimize", "--min-savings", "100.0", "--json"])
+    assert res_savings.exit_code == 0
+    parsed_savings = json.loads(res_savings.output)
+    for r in parsed_savings["recommendations"]:
+        assert r["estimated_monthly_savings"] >= 100.0
+
+
+def test_cli_finops_optimize_custom_files(tmp_path: Path):
+    inv_file = tmp_path / "inventory.json"
+    inv_file.write_text("""[
+  {
+    "resource_id": "custom-idle-node",
+    "provider": "aws",
+    "account_id": "111",
+    "service_name": "AmazonEC2",
+    "category": "compute",
+    "monthly_cost": 200.0,
+    "currency": "USD"
+  }
+]""")
+    util_file = tmp_path / "telemetry.json"
+    util_file.write_text("""[
+  {
+    "resource_id": "custom-idle-node",
+    "service_name": "AmazonEC2",
+    "timestamp": "2026-11-20T00:00:00Z",
+    "avg_cpu_pct": 0.5,
+    "peak_cpu_pct": 1.2,
+    "network_in_bytes": 0.0,
+    "network_out_bytes": 0.0,
+    "is_attached": true
+  }
+]""")
+    res = runner.invoke(
+        app,
+        [
+            "finops",
+            "optimize",
+            "--inventory-file",
+            str(inv_file),
+            "--utilization-file",
+            str(util_file),
+            "--json",
+        ],
+    )
+    assert res.exit_code == 0
+    parsed = json.loads(res.output)
+    assert parsed["recommendations_count"] == 1
+    assert parsed["recommendations"][0]["action"] == "TERMINATE"
+    assert parsed["recommendations"][0]["estimated_monthly_savings"] == 200.0
+
+
+def test_cli_finops_optimize_output_file(tmp_path: Path):
+    out_file = tmp_path / "opt_report.json"
+    res = runner.invoke(app, ["finops", "optimize", "--output", str(out_file)])
+    assert res.exit_code == 0
+    assert out_file.exists()
+    parsed = json.loads(out_file.read_text(encoding="utf-8"))
+    assert "total_monthly_savings" in parsed
+
+
+def test_cli_finops_optimize_invalid_arguments():
+    res_bad_prov = runner.invoke(app, ["finops", "optimize", "--provider", "invalid_cloud"])
+    assert res_bad_prov.exit_code == 1
+    assert "Unknown provider" in res_bad_prov.output
+
+    res_bad_cat = runner.invoke(app, ["finops", "optimize", "--category", "invalid_category"])
+    assert res_bad_cat.exit_code == 1
+    assert "Unknown category" in res_bad_cat.output

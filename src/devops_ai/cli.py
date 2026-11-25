@@ -27,6 +27,7 @@ from devops_ai.core.exceptions import (
     DevOpsAIError,
     FinOpsError,
     IncidentNotFoundError,
+    OptimizationError,
     RepositoryLockError,
 )
 from devops_ai.core.logging import setup_logging
@@ -55,9 +56,16 @@ from devops_ai.observability import (
     record_log_anomaly,
 )
 from devops_ai.finops import (
+    CloudProvider,
     CostAnalyzer,
+    OptimizationRisk,
+    ResourceCategory,
+    ResourceOptimizer,
     get_synthetic_billing_dataset,
+    get_synthetic_resource_inventory,
     load_billing_records,
+    load_cloud_resources,
+    load_resource_utilization,
 )
 from devops_ai.rag.evaluation import (
     RAGEvaluator,
@@ -1966,6 +1974,259 @@ def analyze_cloud_costs(
                 f"{r_item['percentage']:.1f}%",
             )
         console.print(res_table)
+
+
+@finops_app.command("optimize")
+def optimize_cloud_resources(
+    inventory_file: Optional[Path] = typer.Option(
+        None,
+        "--inventory-file",
+        "--file",
+        "-f",
+        help="Path to JSON or CSV cloud resource inventory file (defaults to built-in synthetic benchmark).",
+    ),
+    utilization_file: Optional[Path] = typer.Option(
+        None,
+        "--utilization-file",
+        "-u",
+        help="Path to JSON or CSV resource utilization metrics file.",
+    ),
+    provider: Optional[str] = typer.Option(
+        None,
+        "--provider",
+        "-p",
+        help="Filter by cloud provider: 'aws', 'azure', 'gcp', 'kubernetes'.",
+    ),
+    category: Optional[str] = typer.Option(
+        None,
+        "--category",
+        "-c",
+        help="Filter by resource category: 'compute', 'storage', 'database', 'network'.",
+    ),
+    region: Optional[str] = typer.Option(
+        None,
+        "--region",
+        "-r",
+        help="Filter by cloud region (e.g. us-east-1, eastus).",
+    ),
+    risk: Optional[str] = typer.Option(
+        None,
+        "--risk",
+        help="Maximum risk ceiling to include: 'LOW', 'MEDIUM', 'HIGH'.",
+    ),
+    min_savings: float = typer.Option(
+        0.0,
+        "--min-savings",
+        help="Minimum estimated monthly savings threshold to include a recommendation.",
+    ),
+    allowed_root: Optional[Path] = typer.Option(
+        None,
+        "--allowed-root",
+        help="Permitted filesystem root directory to enforce path traversal safety.",
+    ),
+    output_path: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Path to save full JSON optimization summary report.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output raw optimization summary report as JSON to stdout.",
+    ),
+):
+    """Analyze infrastructure utilization and generate evidence-based rightsizing recommendations."""
+    setup_logging(level="WARNING")
+    settings = get_settings()
+
+    # 1. Parse and validate filters
+    prov_filter: Optional[CloudProvider] = None
+    if provider:
+        p_clean = provider.strip().lower()
+        if p_clean in [p.value for p in CloudProvider]:
+            prov_filter = CloudProvider(p_clean)
+        else:
+            console.print(
+                Panel(
+                    f"[bold red]Unknown provider '{provider}'. Allowed: {[p.value for p in CloudProvider]}[/bold red]",
+                    title="Invalid Argument",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    cat_filter: Optional[ResourceCategory] = None
+    if category:
+        c_clean = category.strip().lower()
+        if c_clean in [c.value for c in ResourceCategory]:
+            cat_filter = ResourceCategory(c_clean)
+        else:
+            console.print(
+                Panel(
+                    f"[bold red]Unknown category '{category}'. Allowed: {[c.value for c in ResourceCategory]}[/bold red]",
+                    title="Invalid Argument",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    risk_limit: Optional[OptimizationRisk] = None
+    if risk:
+        r_clean = risk.strip().upper()
+        if r_clean in [rk.value for rk in OptimizationRisk]:
+            risk_limit = OptimizationRisk(r_clean)
+        else:
+            console.print(
+                Panel(
+                    f"[bold red]Unknown risk ceiling '{risk}'. Allowed: {[rk.value for rk in OptimizationRisk]}[/bold red]",
+                    title="Invalid Argument",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    # 2. Ingest resource inventory and telemetry
+    try:
+        if inventory_file:
+            resources = load_cloud_resources(
+                path=inventory_file,
+                allowed_root=allowed_root,
+                max_records=settings.finops_max_records,
+                max_file_size_bytes=settings.finops_max_billing_file_size_bytes,
+            )
+            utilization_map = {}
+            if utilization_file:
+                raw_utils = load_resource_utilization(
+                    path=utilization_file,
+                    allowed_root=allowed_root,
+                    max_records=settings.finops_max_records,
+                    max_file_size_bytes=settings.finops_max_billing_file_size_bytes,
+                )
+                for u in raw_utils:
+                    utilization_map.setdefault(u.resource_id, []).append(u)
+        else:
+            resources, utilization_map = get_synthetic_resource_inventory()
+    except BillingDataError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Data Ingestion Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]Failed to load optimization datasets: {safe_msg}[/bold red]",
+                title="Import Error",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 3. Execute optimization analysis
+    optimizer = ResourceOptimizer(
+        idle_cpu_threshold=settings.finops_idle_cpu_threshold_pct,
+        underutilized_cpu_threshold=settings.finops_underutilized_cpu_threshold_pct,
+        idle_memory_threshold=settings.finops_idle_memory_threshold_pct,
+    )
+    try:
+        summary = optimizer.optimize_inventory(
+            resources=resources,
+            utilization_map=utilization_map,
+            base_currency=settings.finops_default_currency,
+            provider_filter=prov_filter,
+            category_filter=cat_filter,
+            region_filter=region,
+            min_savings=min_savings,
+            risk_limit=risk_limit,
+        )
+    except CurrencyMismatchError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Currency Mismatch Error"))
+        raise typer.Exit(code=1)
+    except OptimizationError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Optimization Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]Optimization analysis failed: {safe_msg}[/bold red]",
+                title="Analysis Error",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 4. Save output report if requested
+    if output_path:
+        try:
+            output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
+        except Exception as e:
+            safe_msg = escape(_sanitize_cli_text(str(e)))
+            console.print(
+                Panel(
+                    f"[bold red]Failed to write output report: {safe_msg}[/bold red]",
+                    title="IO Error",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    # 5. Output format: JSON or Rich Console
+    if json_output:
+        typer.echo(summary.model_dump_json(indent=2))
+        return
+
+    # Rich human-readable display
+    def _fmt(amount: float) -> str:
+        return f"${amount:,.2f}"
+
+    console.print(
+        Panel(
+            f"[bold]Total Potential Monthly Savings:[/bold] [bold green]{_fmt(summary.total_monthly_savings)} {summary.currency}[/bold green]\n"
+            f"[bold]Total Potential Annual Savings:[/bold] [bold green]{_fmt(summary.total_annual_savings)} {summary.currency}[/bold green]\n"
+            f"  - [cyan]Guaranteed Savings (Orphan Asset Cleanup):[/cyan] {_fmt(summary.guaranteed_monthly_savings)}/mo (Annual: {_fmt(summary.guaranteed_annual_savings)})\n"
+            f"  - [yellow]Estimated Savings (Rightsizing & Unverified Commitments):[/yellow] {_fmt(summary.estimated_monthly_savings)}/mo (Annual: {_fmt(summary.estimated_annual_savings)})\n"
+            f"[bold]Recommendations Generated:[/bold] {summary.recommendations_count}\n"
+            f"[bold]Breakdown by Action:[/bold] {dict(summary.recommendations_by_action)}\n"
+            f"[bold]Breakdown by Risk:[/bold] {dict(summary.recommendations_by_risk)}",
+            title="[bold cyan]Cloud FinOps Rightsizing & Optimization Report[/bold cyan]",
+        )
+    )
+
+    if summary.recommendations:
+        rec_table = Table(title="Actionable Optimization Recommendations", show_header=True)
+        rec_table.add_column("Resource Identifier", style="bold cyan")
+        rec_table.add_column("Service", style="green")
+        rec_table.add_column("Action", style="bold yellow")
+        rec_table.add_column("Risk", justify="center")
+        rec_table.add_column("Monthly Savings", justify="right", style="bold green")
+        rec_table.add_column("Annual Savings", justify="right")
+        rec_table.add_column("Confidence", justify="right")
+        rec_table.add_column("Top Evidence", style="dim")
+
+        for r in summary.recommendations:
+            risk_style = (
+                "green"
+                if r.risk == OptimizationRisk.LOW
+                else ("yellow" if r.risk == OptimizationRisk.MEDIUM else "red")
+            )
+            top_ev = r.evidence[0] if r.evidence else "N/A"
+            rec_table.add_row(
+                escape(r.resource_id),
+                escape(r.service_name),
+                escape(r.action.value),
+                f"[{risk_style}]{escape(r.risk.value)}[/{risk_style}]",
+                f"{_fmt(r.estimated_monthly_savings)}",
+                f"{_fmt(r.estimated_annual_savings)}",
+                f"{r.confidence_score:.0%}",
+                escape(top_ev),
+            )
+        console.print(rec_table)
+    else:
+        console.print(
+            "[dim]No resources met optimization criteria (all workloads healthy or within headroom bounds).[/dim]"
+        )
+
+    console.print(
+        "\n[dim yellow]Advisory Notice: Recommendations are strictly advisory and require human engineering review prior to execution. Automated modification of cloud infrastructure is disabled.[/dim yellow]"
+    )
 
 
 def main():

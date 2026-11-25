@@ -5,7 +5,10 @@
 from devops_ai.finops.analyzer import CostAnalyzer
 from devops_ai.finops.importer import (
     get_synthetic_billing_dataset,
+    get_synthetic_resource_inventory,
     load_billing_records,
+    load_cloud_resources,
+    load_resource_utilization,
     parse_billing_records_from_csv,
     parse_billing_records_from_json,
 )
@@ -22,9 +25,11 @@ from devops_ai.finops.models import (
     OptimizationAction,
     OptimizationRecommendation,
     OptimizationRisk,
+    OptimizationSummary,
     ResourceCategory,
     ResourceUtilization,
 )
+from devops_ai.finops.optimizer import ResourceOptimizer
 
 __all__ = [
     "AnomalySeverity",
@@ -40,10 +45,15 @@ __all__ = [
     "OptimizationAction",
     "OptimizationRecommendation",
     "OptimizationRisk",
+    "OptimizationSummary",
     "ResourceCategory",
+    "ResourceOptimizer",
     "ResourceUtilization",
     "get_synthetic_billing_dataset",
+    "get_synthetic_resource_inventory",
     "load_billing_records",
+    "load_cloud_resources",
+    "load_resource_utilization",
     "parse_billing_records_from_csv",
     "parse_billing_records_from_json",
 ]

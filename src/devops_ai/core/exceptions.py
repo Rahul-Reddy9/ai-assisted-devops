@@ -342,3 +342,21 @@ class CostAnalysisError(FinOpsError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, code="COST_ANALYSIS_ERROR")
+
+
+class OptimizationError(FinOpsError):
+    """Raised when resource rightsizing or cost optimization analysis fails."""
+
+    def __init__(self, message: str, code: str = "OPTIMIZATION_ERROR") -> None:
+        super().__init__(message, code=code)
+
+
+class ResourceNotFoundError(OptimizationError):
+    """Raised when a referenced cloud resource or telemetry dataset cannot be located."""
+
+    def __init__(self, resource_id: str) -> None:
+        super().__init__(
+            f"Referenced cloud resource not found: '{resource_id}'",
+            code="RESOURCE_NOT_FOUND_ERROR",
+        )
+        self.resource_id = resource_id

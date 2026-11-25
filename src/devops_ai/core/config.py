@@ -264,6 +264,24 @@ class Settings(BaseSettings):
         le=1000000,
         description="Maximum allowed billing records per analysis run",
     )
+    finops_idle_cpu_threshold_pct: float = Field(
+        default=2.0,
+        ge=0.0,
+        le=20.0,
+        description="Average CPU percentage below which an instance is considered idle",
+    )
+    finops_underutilized_cpu_threshold_pct: float = Field(
+        default=15.0,
+        ge=0.0,
+        le=50.0,
+        description="Average CPU percentage below which an instance is considered underutilized",
+    )
+    finops_idle_memory_threshold_pct: float = Field(
+        default=15.0,
+        ge=0.0,
+        le=50.0,
+        description="Average memory percentage below which a database or workload is considered underutilized",
+    )
 
     @field_validator("rag_embedding_provider")
     @classmethod

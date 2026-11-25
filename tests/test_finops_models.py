@@ -19,6 +19,7 @@ from devops_ai.finops.models import (
     OptimizationAction,
     OptimizationRecommendation,
     OptimizationRisk,
+    OptimizationSummary,
     ResourceCategory,
     ResourceUtilization,
 )
@@ -185,6 +186,42 @@ class TestOptimizationModels:
         assert rec.action == OptimizationAction.TERMINATE
         assert rec.estimated_monthly_savings == 50.0
         assert rec.confidence_score == 0.95
+        assert rec.estimated_annual_savings == 600.0
+
+    def test_optimization_summary_annualized_properties(self):
+        summary = OptimizationSummary(
+            total_monthly_savings=250.0,
+            total_annual_savings=3000.0,
+            guaranteed_monthly_savings=100.0,
+            estimated_monthly_savings=150.0,
+            currency="USD",
+            recommendations_count=2,
+            recommendations_by_action={"CLEANUP_ORPHAN": 1, "DOWNSIZE": 1},
+            recommendations_by_risk={"LOW": 2},
+            recommendations=[],
+        )
+        assert summary.guaranteed_monthly_savings == 100.0
+        assert summary.estimated_monthly_savings == 150.0
+        assert summary.guaranteed_annual_savings == 1200.0
+        assert summary.estimated_annual_savings == 1800.0
+        assert (
+            summary.guaranteed_annual_savings + summary.estimated_annual_savings
+            == summary.total_annual_savings
+        )
+
+    def test_optimization_summary_zero_savings(self):
+        summary = OptimizationSummary(
+            total_monthly_savings=0.0,
+            total_annual_savings=0.0,
+            guaranteed_monthly_savings=0.0,
+            estimated_monthly_savings=0.0,
+            currency="EUR",
+            recommendations_count=0,
+        )
+        assert summary.guaranteed_annual_savings == 0.0
+        assert summary.estimated_annual_savings == 0.0
+        assert summary.total_annual_savings == 0.0
+        assert summary.currency == "EUR"
 
 
 class TestAnomalyAndForecastModels:
