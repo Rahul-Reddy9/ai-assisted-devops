@@ -292,3 +292,53 @@ class EvaluationThresholdError(EvaluationError):
         self.metric = metric
         self.expected = expected
         self.actual = actual
+
+
+# =====================================================================
+# FinOps and Cloud Cost Exceptions (Phase 6)
+# =====================================================================
+
+
+class FinOpsError(DevOpsAIError):
+    """Base exception for all FinOps and cloud cost optimization errors."""
+
+    def __init__(self, message: str, code: str = "FINOPS_ERROR") -> None:
+        super().__init__(message, code=code)
+
+
+class BillingDataError(FinOpsError):
+    """Raised when cloud billing or utilization data is malformed, missing, or invalid."""
+
+    def __init__(self, message: str, source: str = "unknown") -> None:
+        super().__init__(
+            f"Billing data error for '{source}': {message}",
+            code="BILLING_DATA_ERROR",
+        )
+        self.source = source
+
+
+class CurrencyMismatchError(BillingDataError):
+    """Raised when combining or analyzing billing records with mixed or incompatible currencies."""
+
+    def __init__(self, base_currency: str, found_currency: str) -> None:
+        super().__init__(
+            f"Currency mismatch detected: expected base currency '{base_currency}', found '{found_currency}'",
+            source="currency_validator",
+        )
+        self.code = "CURRENCY_MISMATCH_ERROR"
+        self.base_currency = base_currency
+        self.found_currency = found_currency
+
+
+class CostModelError(FinOpsError):
+    """Raised when cost model validation or configuration fails."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="COST_MODEL_ERROR")
+
+
+class CostAnalysisError(FinOpsError):
+    """Raised when cost breakdown, aggregation, or time-series analysis encounters an error."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="COST_ANALYSIS_ERROR")

@@ -14,6 +14,7 @@ DevOps AI is an enterprise-grade AI-assisted DevOps engineering suite designed t
 - **RAG Document Ingestion & Chunking**: Modular ingestion pipeline for Markdown, Plain Text, PDF, JSON, and YAML with structure-aware chunking, code block preservation, secret scrubbing, and deduplication.
 - **Vector Embeddings, Persistent Storage & Semantic Retrieval**: Pluggable embeddings (Ollama `nomic-embed-text`, deterministic offline Mock), persistent ChromaDB vector storage with cosine similarity conversion, provenance-preserving semantic retrieval, and agent grounding with untrusted context isolation.
 - **RAG Evaluation, Retrieval Quality & Observability**: Standard Information Retrieval metrics (Precision@K, Recall@K, MRR, nDCG@K), answer grounding and citation verification, decomposed query latency percentiles (embedding vs. search), built-in synthetic operational benchmark, and CLI quality gating for CI/CD pipelines.
+- **Cloud Cost & FinOps Optimization**: Provider-independent multi-cloud billing ingestion (AWS CUR, Azure Cost Export, GCP Billing, Standard format), multi-dimensional spend aggregation, time-series daily/monthly rollups, and strict currency mismatch validation.
 - **Turnkey Grafana Integration**: Pre-provisioned Grafana dashboards and Prometheus datasource configurations.
 - **Unified CLI**: Developer-friendly CLI built on Typer and Rich with error handling, markup escaping, and comprehensive credential redaction.
 
@@ -79,6 +80,9 @@ Key configuration settings:
 - `RAG_EVAL_MAX_QUERIES`: Maximum allowed queries per evaluation run (default: `500`, range: 1–5000).
 - `RAG_EVAL_GROUNDEDNESS_OVERLAP_THRESHOLD`: Minimum lexical token containment threshold for grounded claims (default: `0.3`, range: 0.0–1.0).
 - `RAG_EVAL_LATENCY_WARN_THRESHOLD_MS`: Query latency warning threshold in milliseconds (default: `500.0`).
+- `FINOPS_DEFAULT_CURRENCY`: Default 3-letter currency code for cost analysis (default: `USD`).
+- `FINOPS_MAX_BILLING_FILE_SIZE_BYTES`: Maximum billing file size for import (default: `10485760` / 10MB).
+- `FINOPS_MAX_RECORDS`: Maximum number of billing records to process per run (default: `100000`).
 
 ---
 
@@ -172,6 +176,28 @@ devops-ai incident close INC-20261124-0001 --notes "Post-mortem completed and re
 devops-ai incident report INC-20261124-0001 --format markdown --output postmortem.md
 devops-ai incident report INC-20261124-0001 --format json --output incident.json
 devops-ai incident report INC-20261124-0001 --format terminal
+```
+
+### 6. Cloud Cost & FinOps Optimization
+```bash
+# Analyze cloud billing data using the built-in synthetic multi-cloud dataset
+devops-ai finops analyze
+
+# Analyze billing data from a CSV or JSON file (AWS CUR, Azure Cost Export, GCP Billing, or Standard format)
+devops-ai finops analyze --file ./billing-data.csv
+
+# Group cost breakdown by service (default), account, region, or date
+devops-ai finops analyze --file ./billing-data.csv --group-by account
+devops-ai finops analyze --file ./billing-data.csv --group-by region
+devops-ai finops analyze --file ./billing-data.csv --group-by date
+
+# Filter by cloud service, account ID, or date range
+devops-ai finops analyze --service AmazonEC2
+devops-ai finops analyze --account prod-account-01
+devops-ai finops analyze --start-date 2026-11-01 --end-date 2026-11-20
+
+# Export structured cost analysis as JSON for pipelines and automation
+devops-ai finops analyze --file ./billing-data.csv --json
 ```
 
 ---
@@ -545,6 +571,61 @@ report = evaluator.evaluate_dataset(
 print(f"Passed Quality Gates: {report.passed_quality_gates}")
 print(f"Mean MRR: {report.mean_retrieval_metrics.mrr:.4f}")
 print(f"p95 Latency: {report.latency_summary.total_latency.p95:.2f} ms")
+```
+
+---
+
+## Cloud Cost & FinOps Optimization (Phase 6)
+
+DevOps AI provides an offline-first, provider-independent FinOps analysis subsystem for multi-cloud cost visibility, spend aggregation, and resource cost attribution.
+
+### 1. Provider-Independent Cost Models
+The FinOps subsystem defines vendor-neutral Pydantic models for cloud economics:
+- **`BillingRecord`**: Standardized immutable cost record with ISO-4217 currency validation, temporal bounds, and provider tagging (`AWS`, `GCP`, `AZURE`, `GENERIC`).
+- **`CloudResource`**: Universal cloud infrastructure asset representation with functional categorization (`COMPUTE`, `STORAGE`, `NETWORK`, `DATABASE`, `SERVERLESS`, `OTHER`).
+- **`ResourceUtilization`**: Telemetry and utilization metrics (CPU, memory, disk, network throughput) mapped for rightsizing.
+- **`CostSummary`**: Aggregated financial metrics across multi-cloud billing records, including total spend, currency verification, service/account/region breakdowns, and time-series daily/monthly rollups.
+
+### 2. Multi-Cloud Schema Normalization
+The billing importer safely ingests raw CSV and JSON cost reports without requiring cloud vendor SDKs:
+- **AWS Cost and Usage Report (CUR)**: Normalizes fields like `lineItem/ResourceId`, `lineItem/ProductCode`, `lineItem/UnblendedCost`, `pricing/currency`, and `lineItem/UsageStartDate`.
+- **Azure Cost Management Export**: Normalizes fields like `ResourceId`, `ServiceName`, `CostInBillingCurrency`, `BillingCurrency`, and `UsageDateTime`.
+- **GCP Cloud Billing Export**: Normalizes fields like `resource.global_name`, `service.description`, `cost`, `currency`, and `usage_start_time`.
+- **Standard Schema**: Direct mapping of standardized keys (`resource_id`, `service_name`, `cost`, `currency`, `provider`, `start_time`, `end_time`).
+- **Path Traversal & Size Limits**: Enforces strict file boundary validation and size limits (`FINOPS_MAX_BILLING_FILE_SIZE_BYTES`, default 10MB) to prevent denial-of-service vulnerabilities.
+
+### 3. Financial Safety, Currency Validation & Accounting Semantics
+- **Accounting Semantics**: The FinOps subsystem distinguishes between gross charges, credits/refunds, and net spend:
+  - **`gross_cost`**: Sum of positive billing line items representing direct resource consumption.
+  - **`credit_cost`**: Sum of negative billing items representing vendor promotional credits, refunds, or invoice adjustments (always $\le 0.0$).
+  - **`total_cost`**: Net total expenditure ($\text{gross\_cost} + \text{credit\_cost}$).
+  - **Percentage Attribution**: Resource and dimensional shares are calculated relative to net spend ($\frac{\text{cost}}{\text{net total}} \times 100\%$) when net spend is positive, defaulting safely to $0.0\%$ if net spend is zero or negative to prevent misleading or undefined percentages.
+- **Strict Currency Consistency**: Mixed-currency summation is strictly prohibited. `CostAnalyzer` validates that all records in an analysis batch match `base_currency` (default: `USD`) and raises `CurrencyMismatchError` upon encountering conflicting currencies.
+- **Non-Negative Guard Rails**: While line items and net totals support signed accounting values, asset inventory costs (`CloudResource.monthly_cost`), utilization metrics, and rightsizing savings recommendations enforce strict non-negative boundaries (`ge=0.0`).
+
+### 4. Python Programmatic Usage
+```python
+from pathlib import Path
+from devops_ai.finops import CostAnalyzer, load_billing_records
+
+# 1. Ingest billing records (AWS CUR, Azure Export, GCP Billing, or Standard format)
+records, detected_schema = load_billing_records(Path("tests/fixtures/sample_billing.csv"))
+
+# 2. Analyze costs and generate financial summary
+analyzer = CostAnalyzer()
+summary = analyzer.summarize(records)
+
+print(f"Net Spend: {summary.currency} {summary.total_cost:.2f}")
+print(f"Gross Charges: {summary.currency} {summary.gross_cost:.2f}")
+print(f"Credits & Refunds: {summary.currency} {summary.credit_cost:.2f}")
+print("Top Services:")
+for service, cost in summary.service_costs.items():
+    print(f"  - {service}: {summary.currency} {cost:.2f}")
+
+# 3. Filter records for targeted analysis
+ec2_records = analyzer.filter_records(records, service="AmazonEC2")
+ec2_summary = analyzer.summarize(ec2_records)
+print(f"EC2 Net Spend: {ec2_summary.currency} {ec2_summary.total_cost:.2f}")
 ```
 
 ---

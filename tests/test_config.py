@@ -30,6 +30,9 @@ def test_default_settings():
     assert settings.rag_vector_store_path == "./data/vector_store"
     assert settings.rag_retrieval_top_k == 5
     assert settings.rag_similarity_threshold == 0.5
+    assert settings.finops_default_currency == "USD"
+    assert settings.finops_max_billing_file_size_bytes == 10 * 1024 * 1024
+    assert settings.finops_max_records == 100000
 
 
 def test_custom_settings_via_env(mock_env):
@@ -97,3 +100,34 @@ def test_invalid_rag_embedding_and_vector_settings():
 
     with pytest.raises(ValidationError):
         Settings(rag_similarity_threshold=1.5)
+
+
+def test_finops_settings_validation():
+    """Verify validation boundaries and custom configuration for FinOps settings."""
+    # Valid custom values
+    custom = Settings(
+        finops_default_currency="EUR",
+        finops_max_billing_file_size_bytes=20 * 1024 * 1024,
+        finops_max_records=50000,
+    )
+    assert custom.finops_default_currency == "EUR"
+    assert custom.finops_max_billing_file_size_bytes == 20 * 1024 * 1024
+    assert custom.finops_max_records == 50000
+
+    # Invalid currency code length
+    with pytest.raises(ValidationError):
+        Settings(finops_default_currency="US")
+    with pytest.raises(ValidationError):
+        Settings(finops_default_currency="USDD")
+
+    # Invalid file size bounds (< 1024 or > 100MB)
+    with pytest.raises(ValidationError):
+        Settings(finops_max_billing_file_size_bytes=500)
+    with pytest.raises(ValidationError):
+        Settings(finops_max_billing_file_size_bytes=101 * 1024 * 1024)
+
+    # Invalid max records (< 1 or > 1,000,000)
+    with pytest.raises(ValidationError):
+        Settings(finops_max_records=0)
+    with pytest.raises(ValidationError):
+        Settings(finops_max_records=1000001)

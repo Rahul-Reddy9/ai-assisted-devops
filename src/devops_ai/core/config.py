@@ -245,6 +245,26 @@ class Settings(BaseSettings):
         description="Query latency threshold in milliseconds to log warning",
     )
 
+    # FinOps and Cloud Cost Configuration (Phase 6)
+    finops_default_currency: str = Field(
+        default="USD",
+        min_length=3,
+        max_length=3,
+        description="Default currency code for cloud cost calculations and summaries (ISO 4217)",
+    )
+    finops_max_billing_file_size_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        le=100 * 1024 * 1024,
+        description="Maximum allowed file size in bytes for billing dataset import (default: 10MB)",
+    )
+    finops_max_records: int = Field(
+        default=100000,
+        ge=1,
+        le=1000000,
+        description="Maximum allowed billing records per analysis run",
+    )
+
     @field_validator("rag_embedding_provider")
     @classmethod
     def validate_embedding_provider(cls, v: str) -> str:

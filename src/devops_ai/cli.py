@@ -20,9 +20,12 @@ import typer
 from devops_ai import __version__
 from devops_ai.core.config import get_settings
 from devops_ai.core.exceptions import (
+    BillingDataError,
     ConcurrencyConflictError,
+    CurrencyMismatchError,
     DatasetValidationError,
     DevOpsAIError,
+    FinOpsError,
     IncidentNotFoundError,
     RepositoryLockError,
 )
@@ -51,6 +54,11 @@ from devops_ai.observability import (
     get_prometheus_exposition,
     record_log_anomaly,
 )
+from devops_ai.finops import (
+    CostAnalyzer,
+    get_synthetic_billing_dataset,
+    load_billing_records,
+)
 from devops_ai.rag.evaluation import (
     RAGEvaluator,
     get_builtin_evaluation_dataset,
@@ -75,6 +83,9 @@ incident_app = typer.Typer(
 rag_app = typer.Typer(
     name="rag", help="RAG document ingestion, semantic retrieval, and evaluation."
 )
+finops_app = typer.Typer(
+    name="finops", help="Cloud and FinOps cost analysis, optimization, and forecasting."
+)
 
 app.add_typer(generate_app)
 app.add_typer(provider_app)
@@ -83,6 +94,7 @@ app.add_typer(metrics_app)
 app.add_typer(monitor_app)
 app.add_typer(incident_app)
 app.add_typer(rag_app)
+app.add_typer(finops_app)
 
 console = Console()
 
@@ -1695,6 +1707,265 @@ def evaluate_rag(
             )
         )
         raise typer.Exit(code=1)
+
+
+# =====================================================================
+# FinOps Subsystem CLI Commands (Phase 6 Commit 1)
+# =====================================================================
+
+
+@finops_app.command("analyze")
+def analyze_cloud_costs(
+    billing_file: Optional[Path] = typer.Option(
+        None,
+        "--billing-file",
+        "--file",
+        "-b",
+        help="Path to CSV or JSON billing export file (defaults to built-in synthetic benchmark).",
+    ),
+    service: Optional[str] = typer.Option(
+        None,
+        "--service",
+        "-s",
+        help="Filter expenditure by cloud service name (e.g. AmazonEC2, BigQuery).",
+    ),
+    account: Optional[str] = typer.Option(
+        None,
+        "--account",
+        "-a",
+        help="Filter expenditure by cloud account/subscription/project ID.",
+    ),
+    region: Optional[str] = typer.Option(
+        None,
+        "--region",
+        "-r",
+        help="Filter expenditure by cloud region (e.g. us-east-1, eastus).",
+    ),
+    start_date: Optional[str] = typer.Option(
+        None,
+        "--start-date",
+        help="Filter expenditure by start date (YYYY-MM-DD).",
+    ),
+    end_date: Optional[str] = typer.Option(
+        None,
+        "--end-date",
+        help="Filter expenditure by end date (YYYY-MM-DD).",
+    ),
+    group_by: str = typer.Option(
+        "service",
+        "--group-by",
+        "-g",
+        help="Dimension to group costs by in table display: 'service', 'account', 'region', or 'date'.",
+    ),
+    allowed_root: Optional[Path] = typer.Option(
+        None,
+        "--allowed-root",
+        help="Permitted filesystem root directory to enforce path traversal safety.",
+    ),
+    output_path: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Path to save full JSON cost summary report.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output raw cost summary report as JSON to stdout.",
+    ),
+):
+    """Analyze cloud expenditure with multi-dimensional breakdowns and summaries."""
+    setup_logging(level="WARNING")
+    settings = get_settings()
+
+    # 1. Validate date filters if provided
+    parsed_start_date: Optional[datetime.date] = None
+    if start_date:
+        try:
+            parsed_start_date = datetime.date.fromisoformat(start_date.strip())
+        except ValueError:
+            console.print(
+                Panel(
+                    f"[bold red]Invalid --start-date format '{start_date}'. Expected YYYY-MM-DD.[/bold red]",
+                    title="Invalid Date Format",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    parsed_end_date: Optional[datetime.date] = None
+    if end_date:
+        try:
+            parsed_end_date = datetime.date.fromisoformat(end_date.strip())
+        except ValueError:
+            console.print(
+                Panel(
+                    f"[bold red]Invalid --end-date format '{end_date}'. Expected YYYY-MM-DD.[/bold red]",
+                    title="Invalid Date Format",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    if parsed_start_date and parsed_end_date and parsed_start_date > parsed_end_date:
+        console.print(
+            Panel(
+                f"[bold red]--start-date ({parsed_start_date}) cannot be later than --end-date ({parsed_end_date}).[/bold red]",
+                title="Invalid Date Range",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 2. Load billing records
+    try:
+        if billing_file:
+            records, detected_schema = load_billing_records(
+                path=billing_file,
+                allowed_root=allowed_root,
+                max_records=settings.finops_max_records,
+                max_file_size_bytes=settings.finops_max_billing_file_size_bytes,
+            )
+        else:
+            records = get_synthetic_billing_dataset()
+            detected_schema = "SYNTHETIC_BENCHMARK"
+    except BillingDataError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Billing Data Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]Failed to load billing records: {safe_msg}[/bold red]",
+                title="Import Error",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 3. Filter records
+    analyzer = CostAnalyzer()
+    filtered_records = analyzer.filter_records(
+        records=records,
+        service=service,
+        account=account,
+        region=region,
+        start_date=parsed_start_date,
+        end_date=parsed_end_date,
+    )
+
+    # 4. Compute cost summary
+    try:
+        summary = analyzer.summarize(
+            records=filtered_records,
+            base_currency=settings.finops_default_currency,
+        )
+    except CurrencyMismatchError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Currency Mismatch Error"))
+        raise typer.Exit(code=1)
+    except FinOpsError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="FinOps Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(f"[bold red]Analysis failed: {safe_msg}[/bold red]", title="Analysis Error")
+        )
+        raise typer.Exit(code=1)
+
+    # 5. Save output file if requested
+    if output_path:
+        try:
+            output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
+        except Exception as e:
+            safe_msg = escape(_sanitize_cli_text(str(e)))
+            console.print(
+                Panel(
+                    f"[bold red]Failed to write output file: {safe_msg}[/bold red]",
+                    title="IO Error",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    # 6. Output format: JSON or Rich Console
+    if json_output:
+        typer.echo(summary.model_dump_json(indent=2))
+        return
+
+    # Rich human-readable output
+    def _fmt_money(val: float) -> str:
+        if val < 0:
+            return f"-${abs(val):,.2f}"
+        return f"${val:,.2f}"
+
+    start_str = (
+        summary.period_start.strftime("%Y-%m-%d %H:%M UTC") if summary.period_start else "N/A"
+    )
+    end_str = summary.period_end.strftime("%Y-%m-%d %H:%M UTC") if summary.period_end else "N/A"
+
+    console.print(
+        Panel(
+            f"[bold]Detected Schema:[/bold] {escape(detected_schema)}\n"
+            f"[bold]Net Spend:[/bold] [bold green]{_fmt_money(summary.total_cost)} {summary.currency}[/bold green]\n"
+            f"[bold]Gross Charges:[/bold] {_fmt_money(summary.gross_cost)} {summary.currency}\n"
+            f"[bold]Credits & Refunds:[/bold] [bold cyan]{_fmt_money(summary.credit_cost)} {summary.currency}[/bold cyan]\n"
+            f"[bold]Processed Records:[/bold] {summary.total_records}\n"
+            f"[bold]Billing Window:[/bold] {start_str} -> {end_str}",
+            title="[bold cyan]Cloud FinOps Cost Analysis[/bold cyan]",
+        )
+    )
+
+    # Dimensional Breakdown Table based on --group-by
+    norm_group = group_by.strip().lower()
+    if norm_group == "account":
+        table_title = "Cost by Cloud Account / Subscription"
+        breakdown_data = summary.account_costs
+        dim_col = "Account ID"
+    elif norm_group == "region":
+        table_title = "Cost by Cloud Region"
+        breakdown_data = summary.region_costs
+        dim_col = "Region"
+    elif norm_group == "date":
+        table_title = "Daily Spend Breakdown"
+        breakdown_data = summary.daily_costs
+        dim_col = "Date"
+    else:
+        table_title = "Cost by Cloud Service"
+        breakdown_data = summary.service_costs
+        dim_col = "Service Name"
+
+    cost_table = Table(title=table_title, show_header=True)
+    cost_table.add_column(dim_col, style="bold cyan")
+    cost_table.add_column("Spend Amount", justify="right")
+    cost_table.add_column("Share (%)", justify="right")
+
+    for k, v in breakdown_data.items():
+        pct = (v / summary.total_cost * 100.0) if summary.total_cost > 0 else 0.0
+        cost_table.add_row(escape(k), _fmt_money(v), f"{pct:.1f}%")
+
+    console.print(cost_table)
+
+    # Top Spending Resources Table
+    if summary.top_resources:
+        res_table = Table(title="Top Spending Resources", show_header=True)
+        res_table.add_column("Resource Identifier", style="bold cyan")
+        res_table.add_column("Service", style="green")
+        res_table.add_column("Spend Amount", justify="right")
+        res_table.add_column("Share (%)", justify="right")
+
+        for r_item in summary.top_resources:
+            r_name = (
+                f"{r_item['resource_id']} ({r_item['resource_name']})"
+                if r_item.get("resource_name")
+                else r_item["resource_id"]
+            )
+            res_table.add_row(
+                escape(r_name),
+                escape(r_item["service_name"]),
+                _fmt_money(r_item["cost"]),
+                f"{r_item['percentage']:.1f}%",
+            )
+        console.print(res_table)
 
 
 def main():
