@@ -22,11 +22,14 @@ from devops_ai.core.config import get_settings
 from devops_ai.core.exceptions import (
     BillingDataError,
     ConcurrencyConflictError,
+    CostAnomalyError,
+    CostForecastError,
     CurrencyMismatchError,
     DatasetValidationError,
     DevOpsAIError,
     FinOpsError,
     IncidentNotFoundError,
+    InsufficientDataError,
     OptimizationError,
     RepositoryLockError,
 )
@@ -56,11 +59,16 @@ from devops_ai.observability import (
     record_log_anomaly,
 )
 from devops_ai.finops import (
+    AnomalySeverity,
     CloudProvider,
     CostAnalyzer,
+    CostAnomalyDetector,
+    CostForecaster,
+    ForecastMethod,
     OptimizationRisk,
     ResourceCategory,
     ResourceOptimizer,
+    get_synthetic_anomaly_and_forecast_dataset,
     get_synthetic_billing_dataset,
     get_synthetic_resource_inventory,
     load_billing_records,
@@ -2226,6 +2234,543 @@ def optimize_cloud_resources(
 
     console.print(
         "\n[dim yellow]Advisory Notice: Recommendations are strictly advisory and require human engineering review prior to execution. Automated modification of cloud infrastructure is disabled.[/dim yellow]"
+    )
+
+
+@finops_app.command("anomalies")
+def detect_cost_anomalies(
+    billing_file: Optional[Path] = typer.Option(
+        None,
+        "--billing-file",
+        "--file",
+        "-f",
+        help="Path to JSON or CSV cloud billing records file (defaults to built-in synthetic benchmark).",
+    ),
+    service: Optional[str] = typer.Option(
+        None,
+        "--service",
+        "-s",
+        help="Filter anomalies for a specific cloud service (e.g. 'AmazonEC2', 'CloudSQL').",
+    ),
+    account: Optional[str] = typer.Option(
+        None,
+        "--account",
+        "-a",
+        help="Filter anomalies for a specific account or subscription ID.",
+    ),
+    region: Optional[str] = typer.Option(
+        None,
+        "--region",
+        "-r",
+        help="Filter anomalies for a specific cloud region (e.g. 'us-east-1').",
+    ),
+    severity: Optional[str] = typer.Option(
+        None,
+        "--severity",
+        help="Filter anomalies by minimum severity ('low', 'medium', 'high', 'critical').",
+    ),
+    start_date: Optional[str] = typer.Option(
+        None,
+        "--start-date",
+        help="Filter records starting from this date (format: YYYY-MM-DD).",
+    ),
+    end_date: Optional[str] = typer.Option(
+        None,
+        "--end-date",
+        help="Filter records up to this date (format: YYYY-MM-DD).",
+    ),
+    z_threshold: Optional[float] = typer.Option(
+        None,
+        "--z-threshold",
+        "-z",
+        help="Z-score threshold for anomaly sensitivity (overrides configuration default).",
+    ),
+    allowed_root: Optional[Path] = typer.Option(
+        None,
+        "--allowed-root",
+        help="Permitted filesystem root directory to enforce path traversal safety.",
+    ),
+    output_path: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Path to save full JSON anomaly report.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output raw anomaly report as JSON to stdout.",
+    ),
+):
+    """Detect statistical cost anomalies and expenditure surges across multi-dimensional cloud billing data."""
+    setup_logging(level="WARNING")
+    settings = get_settings()
+
+    # 1. Parse date filters
+    parsed_start_date: Optional[datetime.date] = None
+    if start_date:
+        try:
+            parsed_start_date = datetime.date.fromisoformat(start_date.strip())
+        except ValueError:
+            console.print(
+                Panel(
+                    f"[bold red]Invalid --start-date format '{start_date}'. Expected YYYY-MM-DD.[/bold red]",
+                    title="Invalid Date Format",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    parsed_end_date: Optional[datetime.date] = None
+    if end_date:
+        try:
+            parsed_end_date = datetime.date.fromisoformat(end_date.strip())
+        except ValueError:
+            console.print(
+                Panel(
+                    f"[bold red]Invalid --end-date format '{end_date}'. Expected YYYY-MM-DD.[/bold red]",
+                    title="Invalid Date Format",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    if parsed_start_date and parsed_end_date and parsed_start_date > parsed_end_date:
+        console.print(
+            Panel(
+                f"[bold red]--start-date ({parsed_start_date}) cannot be later than --end-date ({parsed_end_date}).[/bold red]",
+                title="Invalid Date Range",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 2. Parse severity filter
+    sev_filter: Optional[AnomalySeverity] = None
+    if severity:
+        try:
+            sev_filter = AnomalySeverity(severity.strip().upper())
+        except ValueError:
+            valid_sevs = ", ".join(s.value.lower() for s in AnomalySeverity)
+            console.print(
+                Panel(
+                    f"[bold red]Invalid --severity '{severity}'. Valid options: {valid_sevs}[/bold red]",
+                    title="Invalid Severity",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    # 3. Load billing records
+    try:
+        if billing_file:
+            records, _ = load_billing_records(
+                path=billing_file,
+                allowed_root=allowed_root,
+                max_records=settings.finops_max_records,
+                max_file_size_bytes=settings.finops_max_billing_file_size_bytes,
+            )
+        else:
+            records = get_synthetic_anomaly_and_forecast_dataset()
+    except BillingDataError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Billing Data Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]Failed to load billing records: {safe_msg}[/bold red]",
+                title="Import Error",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 4. Execute anomaly detection
+    threshold = (
+        z_threshold if z_threshold is not None else settings.finops_anomaly_z_score_threshold
+    )
+    detector = CostAnomalyDetector(
+        z_score_threshold=threshold,
+        min_observations=settings.finops_anomaly_min_observations,
+        rolling_window_days=settings.finops_anomaly_rolling_window_days,
+    )
+
+    try:
+        summary = detector.detect_anomalies(
+            records=records,
+            base_currency=settings.finops_default_currency,
+            service_filter=service,
+            account_filter=account,
+            region_filter=region,
+            severity_filter=sev_filter,
+            start_date=parsed_start_date,
+            end_date=parsed_end_date,
+        )
+    except CurrencyMismatchError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Currency Mismatch Error"))
+        raise typer.Exit(code=1)
+    except CostAnomalyError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Cost Anomaly Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]Anomaly detection failed: {safe_msg}[/bold red]",
+                title="Detection Error",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 5. Save output file if requested
+    if output_path:
+        try:
+            output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
+        except Exception as e:
+            safe_msg = escape(_sanitize_cli_text(str(e)))
+            console.print(
+                Panel(
+                    f"[bold red]Failed to write output file: {safe_msg}[/bold red]",
+                    title="IO Error",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    # 6. JSON output
+    if json_output:
+        typer.echo(summary.model_dump_json(indent=2))
+        return
+
+    # 7. Rich Human-readable display
+    def _fmt_money(val: float) -> str:
+        return f"${val:,.2f}"
+
+    start_str = summary.period_start.isoformat() if summary.period_start else "N/A"
+    end_str = summary.period_end.isoformat() if summary.period_end else "N/A"
+
+    console.print(
+        Panel(
+            f"[bold]Total Anomalies Detected:[/bold] [bold red]{summary.total_anomalies}[/bold red]\n"
+            f"[bold]Total Excess Spend Above Baseline:[/bold] [bold yellow]{_fmt_money(summary.total_excess_spend)} {summary.currency}[/bold yellow]\n"
+            f"[bold]Breakdown by Severity:[/bold] {dict(summary.anomalies_by_severity)}\n"
+            f"[bold]Breakdown by Service:[/bold] {dict(summary.anomalies_by_service)}\n"
+            f"[bold]Analysis Time Window:[/bold] {start_str} -> {end_str}",
+            title="[bold red]Cloud FinOps Cost Anomaly Detection Report[/bold red]",
+        )
+    )
+
+    if summary.anomalies:
+        table = Table(title="Detected Statistical Spending Surges", show_header=True)
+        table.add_column("Date", style="cyan")
+        table.add_column("Dimension / Service", style="bold yellow")
+        table.add_column("Expected", justify="right")
+        table.add_column("Actual", justify="right", style="bold")
+        table.add_column("Delta ($ / %)", justify="right")
+        table.add_column("Z-Score", justify="right")
+        table.add_column("Severity", justify="center")
+        table.add_column("Confidence", justify="right")
+        table.add_column("Top Evidence", style="dim")
+
+        for anom in summary.anomalies:
+            sev_style = (
+                "bold red"
+                if anom.severity == AnomalySeverity.CRITICAL
+                else (
+                    "red"
+                    if anom.severity == AnomalySeverity.HIGH
+                    else ("yellow" if anom.severity == AnomalySeverity.MEDIUM else "blue")
+                )
+            )
+            dim_label = anom.service_name or (
+                f"Account: {anom.account_id}" if anom.account_id else "Total Spend"
+            )
+            delta_str = f"+{_fmt_money(anom.cost_delta)} (+{anom.percentage_increase:.0f}%)"
+            top_ev = anom.evidence[0] if anom.evidence else anom.explanation
+
+            table.add_row(
+                anom.detected_date.isoformat(),
+                escape(dim_label),
+                _fmt_money(anom.expected_cost),
+                _fmt_money(anom.actual_cost),
+                delta_str,
+                f"{anom.z_score:.2f}σ",
+                f"[{sev_style}]{anom.severity.value}[/{sev_style}]",
+                f"{anom.confidence_score:.0%}",
+                escape(top_ev),
+            )
+        console.print(table)
+    else:
+        console.print("[dim]No spending anomalies detected within specified parameters.[/dim]")
+
+    console.print(
+        "\n[dim yellow]Advisory Notice: Anomalies represent statistical deviations in historical spend and require engineering investigation. Automated remediation or resource termination is disabled.[/dim yellow]"
+    )
+
+
+@finops_app.command("forecast")
+def forecast_cloud_expenditure(
+    billing_file: Optional[Path] = typer.Option(
+        None,
+        "--billing-file",
+        "--file",
+        "-f",
+        help="Path to JSON or CSV cloud billing records file (defaults to built-in synthetic benchmark).",
+    ),
+    horizon: Optional[int] = typer.Option(
+        None,
+        "--horizon",
+        "-h",
+        help="Forecast horizon in days (defaults to configuration default).",
+    ),
+    frequency: str = typer.Option(
+        "daily",
+        "--frequency",
+        help="Forecast granularity: 'daily' or 'monthly' (default: 'daily').",
+    ),
+    method: str = typer.Option(
+        "linear_regression",
+        "--method",
+        "-m",
+        help="Forecasting algorithm: 'linear_regression', 'weighted_moving_average', 'exponential_smoothing', or 'historical_average'.",
+    ),
+    service: Optional[str] = typer.Option(
+        None,
+        "--service",
+        "-s",
+        help="Filter forecast to a specific cloud service.",
+    ),
+    account: Optional[str] = typer.Option(
+        None,
+        "--account",
+        "-a",
+        help="Filter forecast to a specific account or subscription ID.",
+    ),
+    region: Optional[str] = typer.Option(
+        None,
+        "--region",
+        "-r",
+        help="Filter forecast to a specific cloud region.",
+    ),
+    confidence: Optional[float] = typer.Option(
+        None,
+        "--confidence",
+        help="Prediction interval confidence level (0.50 - 0.99, defaults to config default).",
+    ),
+    allowed_root: Optional[Path] = typer.Option(
+        None,
+        "--allowed-root",
+        help="Permitted filesystem root directory to enforce path traversal safety.",
+    ),
+    output_path: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Path to save full JSON forecast report.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output raw forecast summary report as JSON to stdout.",
+    ),
+):
+    """Generate forward-looking expenditure projections with prediction intervals (P10/P50/P90)."""
+    setup_logging(level="WARNING")
+    settings = get_settings()
+
+    # 1. Validate inputs
+    norm_freq = frequency.strip().lower()
+    if norm_freq not in ["daily", "monthly"]:
+        console.print(
+            Panel(
+                f"[bold red]Invalid --frequency '{frequency}'. Must be 'daily' or 'monthly'.[/bold red]",
+                title="Invalid Frequency",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    target_method: ForecastMethod
+    try:
+        target_method = ForecastMethod(method.strip().lower())
+    except ValueError:
+        valid_methods = ", ".join(m.value for m in ForecastMethod)
+        console.print(
+            Panel(
+                f"[bold red]Invalid --method '{method}'. Valid options: {valid_methods}[/bold red]",
+                title="Invalid Method",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    if horizon is not None and horizon < 1:
+        console.print(
+            Panel(
+                f"[bold red]Invalid --horizon '{horizon}'. Must be at least 1 day.[/bold red]",
+                title="Invalid Horizon",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    if confidence is not None and not (0.50 <= confidence <= 0.99):
+        console.print(
+            Panel(
+                f"[bold red]Invalid --confidence '{confidence}'. Must be between 0.50 and 0.99.[/bold red]",
+                title="Invalid Confidence",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 2. Load billing records
+    try:
+        if billing_file:
+            records, _ = load_billing_records(
+                path=billing_file,
+                allowed_root=allowed_root,
+                max_records=settings.finops_max_records,
+                max_file_size_bytes=settings.finops_max_billing_file_size_bytes,
+            )
+        else:
+            records = get_synthetic_anomaly_and_forecast_dataset()
+    except BillingDataError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Billing Data Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]Failed to load billing records: {safe_msg}[/bold red]",
+                title="Import Error",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 3. Execute forecast
+    h_days = horizon if horizon is not None else settings.finops_forecast_default_horizon_days
+    conf_level = confidence if confidence is not None else settings.finops_forecast_confidence_level
+    forecaster = CostForecaster(
+        default_horizon_days=h_days,
+        confidence_level=conf_level,
+        min_observations=settings.finops_forecast_min_observations,
+    )
+
+    try:
+        cost_forecast = forecaster.forecast(
+            records=records,
+            horizon_days=h_days,
+            method=target_method,
+            base_currency=settings.finops_default_currency,
+            service_filter=service,
+            account_filter=account,
+            region_filter=region,
+            frequency=norm_freq,
+        )
+        summary = forecaster.summarize_forecast(cost_forecast)
+    except CurrencyMismatchError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Currency Mismatch Error"))
+        raise typer.Exit(code=1)
+    except InsufficientDataError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Insufficient Data Error"))
+        raise typer.Exit(code=1)
+    except CostForecastError as e:
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Cost Forecast Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(f"[bold red]Forecasting failed: {safe_msg}[/bold red]", title="Forecast Error")
+        )
+        raise typer.Exit(code=1)
+
+    # 4. Save output file if requested
+    if output_path:
+        try:
+            output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
+        except Exception as e:
+            safe_msg = escape(_sanitize_cli_text(str(e)))
+            console.print(
+                Panel(
+                    f"[bold red]Failed to write output file: {safe_msg}[/bold red]",
+                    title="IO Error",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    # 5. JSON output
+    if json_output:
+        typer.echo(summary.model_dump_json(indent=2))
+        return
+
+    # 6. Rich human-readable display
+    def _fmt_money(val: float) -> str:
+        return f"${val:,.2f}"
+
+    trend_styles = {
+        "increasing": "bold red",
+        "decreasing": "bold green",
+        "stable": "bold cyan",
+    }
+    t_style = trend_styles.get(summary.trend, "bold yellow")
+
+    panel_text = (
+        f"[bold]Forecast Window:[/bold] {summary.forecast_start_date} -> {summary.forecast_end_date} ({summary.horizon_days} {'months' if norm_freq == 'monthly' else 'days'})\n"
+        f"[bold]Algorithm / Method:[/bold] {summary.method}\n"
+        f"[bold]Trajectory / Trend:[/bold] [{t_style}]{summary.trend.upper()}[/{t_style}]\n"
+        f"[bold]Confidence Level:[/bold] {summary.confidence_level:.0%}\n"
+        f"[bold]Historical Days Analyzed:[/bold] {summary.historical_days_analyzed}\n"
+        f"--------------------------------------------------\n"
+        f"[bold]Projected Spend (P50 Median):[/bold] [bold cyan]{_fmt_money(summary.total_projected_cost)} {summary.currency}[/bold cyan]\n"
+        f"[bold]Optimistic Spend (P10 Bound):[/bold] [bold green]{_fmt_money(summary.total_p10_cost)} {summary.currency}[/bold green]\n"
+        f"[bold]Conservative Spend (P90 Bound):[/bold] [bold red]{_fmt_money(summary.total_p90_cost)} {summary.currency}[/bold red]\n"
+        f"[bold]Projected {'Monthly' if norm_freq == 'monthly' else 'Daily'} Average:[/bold] {_fmt_money(summary.daily_average_cost)} {summary.currency}"
+    )
+
+    if cost_forecast.evaluation_metrics:
+        mae = cost_forecast.evaluation_metrics.get("mae", 0.0)
+        rmse = cost_forecast.evaluation_metrics.get("rmse", 0.0)
+        mape = cost_forecast.evaluation_metrics.get("mape", 0.0)
+        panel_text += (
+            f"\n--------------------------------------------------\n"
+            f"[bold]In-Sample Goodness of Fit:[/bold] MAE={_fmt_money(mae)}, RMSE={_fmt_money(rmse)}, MAPE={mape:.1f}%"
+        )
+
+    console.print(
+        Panel(
+            panel_text,
+            title="[bold cyan]Cloud FinOps Expenditure Forecast Report[/bold cyan]",
+        )
+    )
+
+    if cost_forecast.points:
+        table = Table(title=f"Projected Spend Trajectory ({norm_freq.title()})", show_header=True)
+        table.add_column("Date", style="cyan")
+        table.add_column("Optimistic (P10)", justify="right", style="green")
+        table.add_column("Projected (P50)", justify="right", style="bold cyan")
+        table.add_column("Conservative (P90)", justify="right", style="red")
+        table.add_column("Uncertainty Range", justify="right", style="dim")
+
+        points_to_display = cost_forecast.points
+        if len(points_to_display) > 31:
+            points_to_display = points_to_display[:15] + points_to_display[-5:]
+
+        for idx, pt in enumerate(points_to_display):
+            if len(cost_forecast.points) > 31 and idx == 15:
+                table.add_row("...", "...", "...", "...", "...")
+            spread = pt.upper_bound - pt.lower_bound
+            table.add_row(
+                pt.date.isoformat(),
+                _fmt_money(pt.lower_bound),
+                _fmt_money(pt.projected_cost),
+                _fmt_money(pt.upper_bound),
+                f"±{_fmt_money(spread / 2.0)}",
+            )
+        console.print(table)
+
+    console.print(
+        "\n[dim yellow]Advisory Notice: Projections are statistical forecasts based on historical spending trajectories. In-sample fit metrics indicate historical model alignment and do not guarantee future predictive accuracy. Zero-clamped prediction intervals are Gaussian approximations for planning purposes and are not financial guarantees.[/dim yellow]"
     )
 
 

@@ -360,3 +360,29 @@ class ResourceNotFoundError(OptimizationError):
             code="RESOURCE_NOT_FOUND_ERROR",
         )
         self.resource_id = resource_id
+
+
+class CostAnomalyError(FinOpsError):
+    """Raised when spending anomaly detection fails or encounters corrupted time-series data."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="COST_ANOMALY_ERROR")
+
+
+class CostForecastError(FinOpsError):
+    """Raised when cost projection or prediction interval estimation fails."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="COST_FORECAST_ERROR")
+
+
+class InsufficientDataError(FinOpsError):
+    """Raised when historical observations are insufficient for reliable statistics or modeling."""
+
+    def __init__(self, message: str, required_count: int = 7, actual_count: int = 0) -> None:
+        super().__init__(
+            f"Insufficient historical data: {message} (required: {required_count}, available: {actual_count})",
+            code="INSUFFICIENT_DATA_ERROR",
+        )
+        self.required_count = required_count
+        self.actual_count = actual_count

@@ -282,6 +282,42 @@ class Settings(BaseSettings):
         le=50.0,
         description="Average memory percentage below which a database or workload is considered underutilized",
     )
+    finops_anomaly_z_score_threshold: float = Field(
+        default=2.5,
+        ge=1.0,
+        le=10.0,
+        description="Statistical Z-score threshold for detecting expenditure anomalies",
+    )
+    finops_anomaly_min_observations: int = Field(
+        default=7,
+        ge=3,
+        le=90,
+        description="Minimum historical observation points required to detect cost anomalies",
+    )
+    finops_anomaly_rolling_window_days: int = Field(
+        default=30,
+        ge=7,
+        le=365,
+        description="Rolling window size in days for establishing historical expenditure baselines",
+    )
+    finops_forecast_default_horizon_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Default future horizon in days for expenditure projections",
+    )
+    finops_forecast_confidence_level: float = Field(
+        default=0.90,
+        ge=0.50,
+        le=0.99,
+        description="Confidence level for forecast prediction intervals (e.g. 0.90 for P10-P90)",
+    )
+    finops_forecast_min_observations: int = Field(
+        default=7,
+        ge=3,
+        le=90,
+        description="Minimum historical data points required to generate expenditure forecasts",
+    )
 
     @field_validator("rag_embedding_provider")
     @classmethod

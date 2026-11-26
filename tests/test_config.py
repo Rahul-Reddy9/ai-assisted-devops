@@ -36,6 +36,12 @@ def test_default_settings():
     assert settings.finops_idle_cpu_threshold_pct == 2.0
     assert settings.finops_underutilized_cpu_threshold_pct == 15.0
     assert settings.finops_idle_memory_threshold_pct == 15.0
+    assert settings.finops_anomaly_z_score_threshold == 2.5
+    assert settings.finops_anomaly_min_observations == 7
+    assert settings.finops_anomaly_rolling_window_days == 30
+    assert settings.finops_forecast_default_horizon_days == 30
+    assert settings.finops_forecast_confidence_level == 0.90
+    assert settings.finops_forecast_min_observations == 7
 
 
 def test_custom_settings_via_env(mock_env):
@@ -150,3 +156,47 @@ def test_finops_settings_validation():
         Settings(finops_underutilized_cpu_threshold_pct=60.0)
     with pytest.raises(ValidationError):
         Settings(finops_idle_memory_threshold_pct=60.0)
+
+
+def test_finops_anomaly_and_forecast_settings_validation():
+    """Verify validation boundaries for anomaly and forecast settings."""
+    custom = Settings(
+        finops_anomaly_z_score_threshold=3.0,
+        finops_anomaly_min_observations=14,
+        finops_anomaly_rolling_window_days=60,
+        finops_forecast_default_horizon_days=45,
+        finops_forecast_confidence_level=0.95,
+        finops_forecast_min_observations=10,
+    )
+    assert custom.finops_anomaly_z_score_threshold == 3.0
+    assert custom.finops_anomaly_min_observations == 14
+    assert custom.finops_anomaly_rolling_window_days == 60
+    assert custom.finops_forecast_default_horizon_days == 45
+    assert custom.finops_forecast_confidence_level == 0.95
+    assert custom.finops_forecast_min_observations == 10
+
+    # Bounds validation
+    with pytest.raises(ValidationError):
+        Settings(finops_anomaly_z_score_threshold=0.5)
+    with pytest.raises(ValidationError):
+        Settings(finops_anomaly_z_score_threshold=15.0)
+
+    with pytest.raises(ValidationError):
+        Settings(finops_anomaly_min_observations=1)
+    with pytest.raises(ValidationError):
+        Settings(finops_anomaly_min_observations=100)
+
+    with pytest.raises(ValidationError):
+        Settings(finops_anomaly_rolling_window_days=5)
+    with pytest.raises(ValidationError):
+        Settings(finops_anomaly_rolling_window_days=400)
+
+    with pytest.raises(ValidationError):
+        Settings(finops_forecast_default_horizon_days=0)
+    with pytest.raises(ValidationError):
+        Settings(finops_forecast_default_horizon_days=500)
+
+    with pytest.raises(ValidationError):
+        Settings(finops_forecast_confidence_level=0.40)
+    with pytest.raises(ValidationError):
+        Settings(finops_forecast_confidence_level=1.0)

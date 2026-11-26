@@ -694,6 +694,80 @@ for rec in summary.recommendations:
     print(f"[{rec.action.value}] {rec.resource_id} ({rec.service_name}): {summary.currency} {rec.estimated_monthly_savings:.2f}/mo (Confidence: {rec.confidence_score:.0%})")
 ```
 
+### 6. Cost Anomaly Detection & Expenditure Forecasting (Commit 3)
+
+DevOps AI provides statistical anomaly detection and uncertainty-aware expenditure forecasting engines for predictive cloud cost governance:
+
+- **Statistical Cost Anomaly Detection (`CostAnomalyDetector`):**
+  - **Multi-Dimensional Scanning:** Scans total cloud spend as well as granular dimensional slices (`service`, `account`, and `region`). Detects account-wide and region-wide surges even when distributed across multiple constituent services.
+  - **Deduplication Hierarchy:** Prevents redundant alert storms when an account or regional surge is 100% driven by a single service spike, prioritizing actionable root-cause attribution (`service` > `account` > `region` > `overall`).
+  - **Entity-Specific Start Dates:** Automatically determines each cloud entity's inception date, preventing false-positive surge alarms on newly provisioned workloads while preserving minimum observation requirements.
+  - **Statistical Baselines & Z-Scores:** Employs rolling mean and sample standard deviation alongside non-parametric Median and Median Absolute Deviation (MAD) over configurable windows (default 30 days). MAD provides robust reference context for audit evidence while parametric Z-scores enforce configurable decision gates.
+  - **Sensitivity & Guardrails:** Enforces minimum observation requirements (`FINOPS_ANOMALY_MIN_OBSERVATIONS`, default 7) and minimum dollar deltas (`min_absolute_delta = $10.00`) to prevent false alarms on minor micro-variances. Division-by-zero safeguards ensure graceful handling of zero baselines.
+  - **Credit Isolation:** Promotional credits, discounts, and refunds are excluded from positive spending baselines to prevent skewing variance calculations.
+  - **Severity & Calibrated Confidence:** Classifies anomalies into `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL` based on standard deviations ($Z \ge 2.0\sigma$ to $Z \ge 4.0\sigma$) and percentage variance, assigning confidence scores ($0.70$ - $0.99$) backed by verifiable audit evidence.
+
+- **Expenditure Forecasting Engine (`CostForecaster`):**
+  - **Predictive Algorithms (`ForecastMethod`):** Supports Ordinary Least Squares (`LINEAR_REGRESSION`), Exponentially Weighted Moving Average (`WEIGHTED_MOVING_AVERAGE`), Holt Linear Exponential Smoothing (`EXPONENTIAL_SMOOTHING`), and Baseline Historical Mean (`HISTORICAL_AVERAGE`).
+  - **Daily and Monthly Granularity:** Generates daily projections or calendar-month aggregated forecast points. Monthly frequency aligns points with calendar-month boundaries, explicitly accounting for partial initial and ending months.
+  - **Uncertainty Bounds & Percentiles (P10 / P50 / P90):** Generates quantile projections reflecting optimistic (P10), median expected (P50), and conservative upper bound (P90) costs. Forecast uncertainty expands with horizon distance via residual standard error penalties ($SE \times \sqrt{1 + h / n}$). Zero-clamped Gaussian intervals provide a prudent, persistent-variance approximation for planning rather than empirical non-parametric quantiles.
+  - **Strict Ordering & Non-Negative Invariant:** Enforces strict non-negative clamping ($ge=0.0$) and ordering invariant $0.0 \le \text{P10} \le \text{P50} \le \text{P90}$ across all forecast points and aggregated sums.
+  - **Trajectory Classification:** Evaluates spending trend into `increasing`, `decreasing`, or `stable`.
+  - **In-Sample Goodness-of-Fit Metrics:** Computes Mean Absolute Error (MAE), Root Mean Squared Error (RMSE), and Mean Absolute Percentage Error (MAPE) evaluating model fit across historical training actuals (goodness-of-fit indicators; not demonstrated future predictive guarantees).
+  - **Insufficient Data Safeguard:** Explicitly flags `insufficient_data=True` with informative messages when observations are below threshold without crashing.
+
+- **CLI Usage:**
+```bash
+# Detect spending surges on default synthetic benchmark
+devops-ai finops anomalies
+
+# Detect anomalies in custom billing data with service filter and Z-score threshold
+devops-ai finops anomalies --file billing.csv --service AmazonEC2 --z-threshold 2.5 --json
+
+# Forecast cloud spend for the next 30 days (daily granularity)
+devops-ai finops forecast
+
+# Forecast spend for the next 90 days aggregated monthly using Holt smoothing
+devops-ai finops forecast --horizon 90 --frequency monthly --method exponential_smoothing
+
+# Export raw JSON forecast summary
+devops-ai finops forecast --output forecast_report.json --json
+```
+
+- **Python Programmatic Usage:**
+```python
+from devops_ai.finops import (
+    CostAnomalyDetector,
+    CostForecaster,
+    ForecastMethod,
+    get_synthetic_anomaly_and_forecast_dataset,
+)
+
+# 1. Load multi-cloud billing records
+records = get_synthetic_anomaly_and_forecast_dataset()
+
+# 2. Run statistical anomaly detection
+detector = CostAnomalyDetector(z_score_threshold=2.5, min_observations=7)
+anomaly_summary = detector.detect_anomalies(records=records)
+
+print(f"Total Anomalies Detected: {anomaly_summary.total_anomalies}")
+print(f"Total Excess Spend: {anomaly_summary.currency} {anomaly_summary.total_excess_spend:.2f}")
+for anom in anomaly_summary.anomalies:
+    print(f"[{anom.severity.value}] {anom.detected_date}: {anom.service_name} actual=${anom.actual_cost:.2f} (expected=${anom.expected_cost:.2f}, Z={anom.z_score:.2f}σ)")
+
+# 3. Generate 30-day forward-looking expenditure forecast
+forecaster = CostForecaster(default_horizon_days=30, confidence_level=0.90)
+forecast = forecaster.forecast(records=records, horizon_days=30, method=ForecastMethod.LINEAR_REGRESSION)
+
+print(f"\nForecast Trend: {forecast.trend.upper()}")
+print(f"Projected P50 Spend: {forecast.currency} {forecast.total_projected_spend:.2f}")
+print(f"Optimistic P10 Bound: {forecast.currency} {forecast.total_p10_spend:.2f}")
+print(f"Conservative P90 Bound: {forecast.currency} {forecast.total_p90_spend:.2f}")
+if forecast.evaluation_metrics:
+    print(f"Fit MAE: ${forecast.evaluation_metrics['mae']:.2f}, RMSE: ${forecast.evaluation_metrics['rmse']:.2f}")
+```
+
+
 ---
 
 ## Security & Reliability Principles

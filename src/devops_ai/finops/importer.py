@@ -1104,3 +1104,131 @@ def get_synthetic_resource_inventory() -> Tuple[
     ]
 
     return resources, utilization_map
+
+
+def get_synthetic_anomaly_and_forecast_dataset() -> List[BillingRecord]:
+    """Return a rich offline daily benchmark dataset containing stable spend, spikes, and growth trends."""
+    base_date = datetime.datetime(2026, 10, 1, 0, 0, 0, tzinfo=datetime.timezone.utc)
+    records: List[BillingRecord] = []
+
+    # 45 days of simulated multi-cloud daily expenditures
+    for day in range(45):
+        dt = base_date + datetime.timedelta(days=day)
+        date_str = dt.strftime("%Y%m%d")
+
+        # 1. AWS EC2: Stable baseline ~$100/day, with sudden runaway batch surge on Days 25, 26, 27 ($380-$440/day)
+        if 25 <= day <= 27:
+            ec2_cost = 410.0 + (day % 3) * 15.0
+            ec2_res = "i-batch-worker-runaway"
+            ec2_name = "batch-worker-runaway-surge"
+        else:
+            ec2_cost = 98.0 + (day % 5) * 1.5
+            ec2_res = "i-0prodworker1234"
+            ec2_name = "prod-api-worker"
+
+        records.append(
+            BillingRecord(
+                record_id=f"REC-AWS-EC2-{date_str}",
+                provider=CloudProvider.AWS,
+                account_id="123456789012",
+                service_name="AmazonEC2",
+                resource_id=ec2_res,
+                resource_name=ec2_name,
+                region="us-east-1",
+                usage_type="BoxUsage:m5.xlarge",
+                usage_quantity=24.0,
+                usage_unit="Hrs",
+                cost=round(ec2_cost, 2),
+                currency="USD",
+                start_time=dt,
+                end_time=dt + datetime.timedelta(days=1),
+                tags={"environment": "production"},
+            )
+        )
+
+        # 2. AWS S3: Stable baseline ~$18/day, with egress spike on Day 34 ($195)
+        if day == 34:
+            s3_cost = 195.50
+            s3_res = "arn:aws:s3:::data-warehouse-egress"
+        else:
+            s3_cost = 18.0 + (day % 4) * 0.5
+            s3_res = "arn:aws:s3:::app-backups"
+
+        records.append(
+            BillingRecord(
+                record_id=f"REC-AWS-S3-{date_str}",
+                provider=CloudProvider.AWS,
+                account_id="123456789012",
+                service_name="AmazonS3",
+                resource_id=s3_res,
+                region="us-east-1",
+                usage_type="TimedStorage-ByteHrs",
+                usage_quantity=500.0,
+                usage_unit="GB-Mo",
+                cost=round(s3_cost, 2),
+                currency="USD",
+                start_time=dt,
+                end_time=dt + datetime.timedelta(days=1),
+                tags={"tier": "storage"},
+            )
+        )
+
+        # 3. Azure VMs: Steady state ~$75/day
+        records.append(
+            BillingRecord(
+                record_id=f"REC-AZURE-VM-{date_str}",
+                provider=CloudProvider.AZURE,
+                account_id="sub-prod-9876",
+                service_name="Virtual Machines",
+                resource_id="/subscriptions/sub-prod-9876/resourceGroups/app-rg/providers/Microsoft.Compute/virtualMachines/vm-frontend-01",
+                region="eastus",
+                usage_type="Standard_D4s_v5",
+                usage_quantity=24.0,
+                usage_unit="Hours",
+                cost=round(75.0 + (day % 3) * 0.8, 2),
+                currency="USD",
+                start_time=dt,
+                end_time=dt + datetime.timedelta(days=1),
+                tags={"environment": "production"},
+            )
+        )
+
+        # 4. GCP Cloud SQL: Linear steady growth ($20 on Day 0 -> $55 on Day 44)
+        gcp_cost = 20.0 + (day * 0.8)
+        records.append(
+            BillingRecord(
+                record_id=f"REC-GCP-SQL-{date_str}",
+                provider=CloudProvider.GCP,
+                account_id="gcp-analytics-prod",
+                service_name="Cloud SQL",
+                resource_id="projects/gcp-analytics-prod/instances/analytics-db",
+                region="us-central1",
+                usage_type="DBInstance:db-custom-4-16",
+                usage_quantity=24.0,
+                usage_unit="Hours",
+                cost=round(gcp_cost, 2),
+                currency="USD",
+                start_time=dt,
+                end_time=dt + datetime.timedelta(days=1),
+                tags={"workload": "analytics"},
+            )
+        )
+
+        # 5. Promotional credit adjustment on Day 14 (-$50.00)
+        if day == 14:
+            records.append(
+                BillingRecord(
+                    record_id="REC-AWS-CREDIT-20261015",
+                    provider=CloudProvider.AWS,
+                    account_id="123456789012",
+                    service_name="AmazonEC2",
+                    usage_type="CreditAdjustment",
+                    cost=-50.00,
+                    currency="USD",
+                    start_time=dt,
+                    end_time=dt + datetime.timedelta(days=1),
+                    tags={"type": "promotional-credit"},
+                )
+            )
+
+    return records

@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from devops_ai.finops.models import (
     AnomalySeverity,
+    AnomalySummary,
     BillingPeriod,
     BillingRecord,
     CloudProvider,
@@ -15,7 +16,9 @@ from devops_ai.finops.models import (
     CostAnomaly,
     CostForecast,
     CostSummary,
+    ForecastMethod,
     ForecastPoint,
+    ForecastSummary,
     OptimizationAction,
     OptimizationRecommendation,
     OptimizationRisk,
@@ -257,3 +260,108 @@ class TestAnomalyAndForecastModels:
         )
         assert fcst.days_projected == 30
         assert len(fcst.points) == 1
+
+    def test_cost_anomaly_extended_fields(self):
+        anom = CostAnomaly(
+            detected_date=datetime.date(2026, 11, 20),
+            provider=CloudProvider.AWS,
+            account_id="123456789012",
+            service_name="AmazonEC2",
+            region="us-east-1",
+            resource_id="i-test-anomaly",
+            actual_cost=450.0,
+            expected_cost=150.0,
+            cost_delta=300.0,
+            percentage_increase=200.0,
+            z_score=4.2,
+            severity=AnomalySeverity.CRITICAL,
+            confidence_score=0.95,
+            detection_method="z_score",
+            historical_observation_count=30,
+            driver_resources=["i-test-anomaly"],
+            explanation="Unusual batch surge",
+            evidence=["Z-score 4.2 > 2.5"],
+        )
+        assert anom.provider == CloudProvider.AWS
+        assert anom.account_id == "123456789012"
+        assert anom.region == "us-east-1"
+        assert anom.resource_id == "i-test-anomaly"
+        assert anom.confidence_score == 0.95
+        assert anom.historical_observation_count == 30
+
+    def test_anomaly_summary_model(self):
+        summary = AnomalySummary(
+            total_anomalies=2,
+            total_excess_spend=500.0,
+            currency="USD",
+            anomalies_by_severity={"CRITICAL": 1, "HIGH": 1},
+            anomalies_by_service={"AmazonEC2": 2},
+            period_start=datetime.date(2026, 10, 1),
+            period_end=datetime.date(2026, 10, 31),
+        )
+        assert summary.total_anomalies == 2
+        assert summary.total_excess_spend == 500.0
+        assert summary.anomalies_by_severity["CRITICAL"] == 1
+
+    def test_forecast_point_quantiles_sync_and_validation(self):
+        # 1. Automatic synchronization when p10, p50, p90 omitted
+        pt1 = ForecastPoint(
+            date=datetime.date(2026, 12, 1),
+            projected_cost=100.0,
+            lower_bound=80.0,
+            upper_bound=120.0,
+        )
+        assert pt1.p10 == 80.0
+        assert pt1.p50 == 100.0
+        assert pt1.p90 == 120.0
+
+        # 2. Invariant enforcement: 0 <= p10 <= p50 <= p90
+        pt2 = ForecastPoint(
+            date=datetime.date(2026, 12, 2),
+            projected_cost=100.0,
+            lower_bound=110.0,  # lower_bound > projected_cost
+            upper_bound=90.0,  # upper_bound < projected_cost
+        )
+        # Validator clamps p10 and p90 to satisfy p10 <= p50 <= p90
+        assert pt2.p10 <= pt2.p50 <= pt2.p90
+        assert pt2.p10 == 100.0
+        assert pt2.p50 == 100.0
+        assert pt2.p90 == 100.0
+
+    def test_forecast_summary_model(self):
+        point = ForecastPoint(
+            date=datetime.date(2026, 12, 1),
+            projected_cost=100.0,
+            lower_bound=80.0,
+            upper_bound=120.0,
+        )
+        fcst = CostForecast(
+            days_projected=1,
+            method=ForecastMethod.LINEAR_REGRESSION.value,
+            total_projected_spend=100.0,
+            total_p10_spend=80.0,
+            total_p90_spend=120.0,
+            currency="USD",
+            trend="increasing",
+            points=[point],
+        )
+        summary = ForecastSummary(
+            forecast_id=fcst.forecast_id,
+            currency="USD",
+            horizon_days=1,
+            forecast_start_date=datetime.date(2026, 12, 1),
+            forecast_end_date=datetime.date(2026, 12, 1),
+            total_projected_cost=100.0,
+            total_p10_cost=80.0,
+            total_p90_cost=120.0,
+            daily_average_cost=100.0,
+            trend="increasing",
+            method=fcst.method,
+            confidence_level=0.90,
+            historical_days_analyzed=30,
+            forecast=fcst,
+        )
+        assert summary.horizon_days == 1
+        assert summary.daily_average_cost == 100.0
+        assert summary.total_p10_cost == 80.0
+        assert summary.total_p90_cost == 120.0

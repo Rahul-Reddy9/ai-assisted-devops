@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CloudProvider(str, Enum):
@@ -270,7 +270,7 @@ class AnomalySeverity(str, Enum):
 
 
 class CostAnomaly(BaseModel):
-    """Detected unexpected spend variance or spike."""
+    """Detected unexpected spend variance or statistical surge."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -278,32 +278,115 @@ class CostAnomaly(BaseModel):
         default_factory=lambda: f"ANOM-{uuid.uuid4().hex[:8].upper()}", min_length=1
     )
     detected_date: datetime.date = Field(description="Date anomaly was observed")
+    provider: Optional[CloudProvider] = Field(
+        default=None, description="Cloud provider where anomaly originated"
+    )
+    account_id: Optional[str] = Field(
+        default=None, description="Account or subscription identifier"
+    )
     service_name: Optional[str] = Field(default=None, description="Service causing the anomaly")
+    region: Optional[str] = Field(default=None, description="Cloud region of anomaly")
+    resource_id: Optional[str] = Field(
+        default=None, description="Primary resource identifier if isolated"
+    )
     actual_cost: float = Field(ge=0.0, description="Observed cost on anomaly date")
     expected_cost: float = Field(ge=0.0, description="Expected baseline cost")
     cost_delta: float = Field(description="Difference between actual and expected spend")
     percentage_increase: float = Field(description="Percentage variance from baseline")
     z_score: float = Field(description="Statistical Z-score (standard deviations from mean)")
     severity: AnomalySeverity = Field(description="Severity classification")
+    confidence_score: float = Field(
+        default=0.90,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score based on baseline stability and sample size",
+    )
+    detection_method: str = Field(
+        default="z_score",
+        description="Detection algorithm (e.g. 'z_score', 'mad', 'rolling_threshold')",
+    )
+    historical_observation_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of historical observation days used to calculate baseline",
+    )
+    currency: str = Field(
+        default="USD", min_length=3, max_length=3, description="ISO 4217 3-letter currency code"
+    )
     driver_resources: List[str] = Field(
         default_factory=list, description="Specific resource IDs responsible for the spike"
     )
     explanation: str = Field(min_length=1, description="Human-readable root-cause explanation")
+    evidence: List[str] = Field(
+        default_factory=list,
+        description="Supporting telemetry metrics, baselines, and statistical facts",
+    )
+
+
+class AnomalySummary(BaseModel):
+    """Aggregated collection and dimensional summary of detected spending anomalies."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_anomalies: int = Field(ge=0, description="Total count of anomalies detected")
+    total_excess_spend: float = Field(
+        ge=0.0, description="Sum of positive cost deltas above baseline"
+    )
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    anomalies_by_severity: Dict[str, int] = Field(default_factory=dict)
+    anomalies_by_service: Dict[str, int] = Field(default_factory=dict)
+    period_start: Optional[datetime.date] = None
+    period_end: Optional[datetime.date] = None
+    anomalies: List[CostAnomaly] = Field(default_factory=list)
+
+
+class ForecastMethod(str, Enum):
+    """Supported expenditure forecasting algorithms."""
+
+    LINEAR_REGRESSION = "linear_regression"
+    WEIGHTED_MOVING_AVERAGE = "weighted_moving_average"
+    EXPONENTIAL_SMOOTHING = "exponential_smoothing"
+    HISTORICAL_AVERAGE = "historical_average"
 
 
 class ForecastPoint(BaseModel):
-    """A single projected time point in a cloud expenditure forecast."""
+    """A single projected time point in a cloud expenditure forecast with prediction intervals."""
 
     model_config = ConfigDict(extra="forbid")
 
     date: datetime.date = Field(description="Projected forecast date")
-    projected_cost: float = Field(ge=0.0, description="Estimated spend amount")
-    lower_bound: float = Field(ge=0.0, description="Lower confidence interval bound")
-    upper_bound: float = Field(ge=0.0, description="Upper confidence interval bound")
+    projected_cost: float = Field(ge=0.0, description="Estimated spend amount (P50)")
+    lower_bound: float = Field(ge=0.0, description="Lower prediction interval bound (P10)")
+    upper_bound: float = Field(ge=0.0, description="Upper prediction interval bound (P90)")
+    p10: Optional[float] = Field(
+        default=None, ge=0.0, description="Optimistic expenditure estimate (10th percentile)"
+    )
+    p50: Optional[float] = Field(
+        default=None, ge=0.0, description="Median expenditure estimate (50th percentile)"
+    )
+    p90: Optional[float] = Field(
+        default=None, ge=0.0, description="Conservative expenditure estimate (90th percentile)"
+    )
+
+    @model_validator(mode="after")
+    def sync_and_validate_quantiles(self) -> "ForecastPoint":
+        """Ensure p10, p50, p90 are populated and satisfy 0 <= p10 <= p50 <= p90."""
+        if self.p10 is None:
+            self.p10 = self.lower_bound
+        if self.p50 is None:
+            self.p50 = self.projected_cost
+        if self.p90 is None:
+            self.p90 = self.upper_bound
+        # Enforce non-negative ordering invariant: 0 <= p10 <= p50 <= p90
+        if self.p10 > self.p50:
+            self.p10 = self.p50
+        if self.p90 < self.p50:
+            self.p90 = self.p50
+        return self
 
 
 class CostForecast(BaseModel):
-    """Forward-looking projection of cloud costs."""
+    """Forward-looking projection of cloud costs with uncertainty intervals."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -313,14 +396,65 @@ class CostForecast(BaseModel):
     generated_at: datetime.datetime = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
+    target_dimension: str = Field(
+        default="total", description="Target dimension for forecast (e.g. 'total', 'service:EC2')"
+    )
     days_projected: int = Field(ge=1, description="Number of future days forecasted")
     method: str = Field(description="Forecasting model or algorithm utilized")
-    total_projected_spend: float = Field(ge=0.0, description="Sum of projected spend over window")
+    total_projected_spend: float = Field(
+        ge=0.0, description="Sum of projected spend over window (P50)"
+    )
+    total_p10_spend: float = Field(
+        default=0.0, ge=0.0, description="Sum of optimistic P10 spend over window"
+    )
+    total_p90_spend: float = Field(
+        default=0.0, ge=0.0, description="Sum of conservative P90 spend over window"
+    )
     currency: str = Field(default="USD", min_length=3, max_length=3)
+    confidence_level: float = Field(
+        default=0.90, ge=0.50, le=0.99, description="Confidence level for prediction interval"
+    )
+    historical_data_points: int = Field(
+        default=0, ge=0, description="Number of historical observation days used"
+    )
+    trend: str = Field(
+        default="stable",
+        description="Expenditure trajectory ('increasing', 'decreasing', 'stable')",
+    )
     points: List[ForecastPoint] = Field(description="Daily forecast points")
     evaluation_metrics: Dict[str, float] = Field(
         default_factory=dict, description="Backtesting accuracy metrics (MAE, MAPE, RMSE)"
     )
+    supporting_evidence: List[str] = Field(
+        default_factory=list, description="Methodology notes, trend evidence, and assumptions"
+    )
+    insufficient_data: bool = Field(
+        default=False, description="Flag indicating historical observations were below threshold"
+    )
+    message: Optional[str] = Field(
+        default=None, description="Informational or qualification message"
+    )
+
+
+class ForecastSummary(BaseModel):
+    """Aggregated executive summary of cloud expenditure projections."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    forecast_id: str = Field(min_length=1)
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    horizon_days: int = Field(ge=1)
+    forecast_start_date: datetime.date
+    forecast_end_date: datetime.date
+    total_projected_cost: float = Field(ge=0.0)
+    total_p10_cost: float = Field(ge=0.0)
+    total_p90_cost: float = Field(ge=0.0)
+    daily_average_cost: float = Field(ge=0.0)
+    trend: str = Field(default="stable")
+    method: str
+    confidence_level: float
+    historical_days_analyzed: int = Field(ge=0)
+    forecast: CostForecast
 
 
 class CostSummary(BaseModel):

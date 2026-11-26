@@ -276,3 +276,176 @@ def test_cli_finops_optimize_invalid_arguments():
     res_bad_cat = runner.invoke(app, ["finops", "optimize", "--category", "invalid_category"])
     assert res_bad_cat.exit_code == 1
     assert "Unknown category" in res_bad_cat.output
+
+
+# ==============================================================================
+# FinOps Anomalies CLI Tests
+# ==============================================================================
+
+
+def test_cli_finops_anomalies_help():
+    result = runner.invoke(app, ["finops", "anomalies", "--help"])
+    assert result.exit_code == 0
+    assert "--billing-file" in result.output
+    assert "--service" in result.output
+    assert "--severity" in result.output
+    assert "--z-threshold" in result.output
+    assert "--json" in result.output
+
+
+def test_cli_finops_anomalies_default_synthetic():
+    result = runner.invoke(app, ["finops", "anomalies"])
+    assert result.exit_code == 0
+    assert "Cost Anomaly Detection Report" in result.output
+    assert "Detected Statistical Spending Surges" in result.output
+    assert "Advisory Notice" in result.output
+
+
+def test_cli_finops_anomalies_json():
+    result = runner.invoke(app, ["finops", "anomalies", "--json"])
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert "total_anomalies" in parsed
+    assert "total_excess_spend" in parsed
+    assert "anomalies" in parsed
+    assert parsed["total_anomalies"] > 0
+
+
+def test_cli_finops_anomalies_filters():
+    # Service filter
+    res_svc = runner.invoke(app, ["finops", "anomalies", "--service", "AmazonEC2", "--json"])
+    assert res_svc.exit_code == 0
+    parsed_svc = json.loads(res_svc.output)
+    for a in parsed_svc["anomalies"]:
+        if a["service_name"]:
+            assert a["service_name"] == "AmazonEC2"
+
+    # Severity filter
+    res_sev = runner.invoke(app, ["finops", "anomalies", "--severity", "CRITICAL", "--json"])
+    assert res_sev.exit_code == 0
+    parsed_sev = json.loads(res_sev.output)
+    for a in parsed_sev["anomalies"]:
+        assert a["severity"] == "CRITICAL"
+
+
+def test_cli_finops_anomalies_output_file(tmp_path: Path):
+    out_file = tmp_path / "anom_report.json"
+    res = runner.invoke(app, ["finops", "anomalies", "--output", str(out_file)])
+    assert res.exit_code == 0
+    assert out_file.exists()
+    parsed = json.loads(out_file.read_text(encoding="utf-8"))
+    assert "total_anomalies" in parsed
+
+
+def test_cli_finops_anomalies_invalid_inputs():
+    res_bad_date = runner.invoke(app, ["finops", "anomalies", "--start-date", "invalid-date"])
+    assert res_bad_date.exit_code == 1
+    assert "Invalid --start-date format" in res_bad_date.output
+
+    res_range = runner.invoke(
+        app, ["finops", "anomalies", "--start-date", "2026-11-20", "--end-date", "2026-11-10"]
+    )
+    assert res_range.exit_code == 1
+    assert "cannot be later than" in res_range.output
+
+    res_bad_sev = runner.invoke(app, ["finops", "anomalies", "--severity", "EXTREME"])
+    assert res_bad_sev.exit_code == 1
+    assert "Invalid --severity" in res_bad_sev.output
+
+
+# ==============================================================================
+# FinOps Forecast CLI Tests
+# ==============================================================================
+
+
+def test_cli_finops_forecast_help():
+    result = runner.invoke(app, ["finops", "forecast", "--help"])
+    assert result.exit_code == 0
+    assert "--horizon" in result.output
+    assert "--frequency" in result.output
+    assert "--method" in result.output
+    assert "--confidence" in result.output
+    assert "--json" in result.output
+
+
+def test_cli_finops_forecast_default_synthetic():
+    result = runner.invoke(app, ["finops", "forecast"])
+    assert result.exit_code == 0
+    assert "Expenditure Forecast Report" in result.output
+    assert "Projected Spend Trajectory" in result.output
+    assert "In-Sample Goodness of Fit" in result.output
+    assert "Advisory Notice" in result.output
+
+
+def test_cli_finops_forecast_json():
+    result = runner.invoke(app, ["finops", "forecast", "--json"])
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert "forecast_id" in parsed
+    assert "total_projected_cost" in parsed
+    assert "total_p10_cost" in parsed
+    assert "total_p90_cost" in parsed
+    assert (
+        0.0
+        <= parsed["total_p10_cost"]
+        <= parsed["total_projected_cost"]
+        <= parsed["total_p90_cost"]
+    )
+
+
+def test_cli_finops_forecast_methods_and_frequency():
+    # Test methods
+    methods = [
+        "linear_regression",
+        "weighted_moving_average",
+        "exponential_smoothing",
+        "historical_average",
+    ]
+    for m in methods:
+        res = runner.invoke(app, ["finops", "forecast", "--method", m, "--horizon", "7", "--json"])
+        assert res.exit_code == 0
+        parsed = json.loads(res.output)
+        assert parsed["horizon_days"] == 7
+        assert parsed["method"] == m
+
+    # Monthly frequency
+    res_monthly = runner.invoke(
+        app, ["finops", "forecast", "--frequency", "monthly", "--horizon", "60", "--json"]
+    )
+    assert res_monthly.exit_code == 0
+    parsed_monthly = json.loads(res_monthly.output)
+    assert parsed_monthly["horizon_days"] >= 2
+
+    # Monthly frequency text output
+    res_monthly_text = runner.invoke(
+        app, ["finops", "forecast", "--frequency", "monthly", "--horizon", "60"]
+    )
+    assert res_monthly_text.exit_code == 0
+    assert "Projected Monthly Average:" in res_monthly_text.output
+
+
+def test_cli_finops_forecast_output_file(tmp_path: Path):
+    out_file = tmp_path / "fcst_report.json"
+    res = runner.invoke(app, ["finops", "forecast", "--output", str(out_file)])
+    assert res.exit_code == 0
+    assert out_file.exists()
+    parsed = json.loads(out_file.read_text(encoding="utf-8"))
+    assert "total_projected_cost" in parsed
+
+
+def test_cli_finops_forecast_invalid_inputs():
+    res_freq = runner.invoke(app, ["finops", "forecast", "--frequency", "yearly"])
+    assert res_freq.exit_code == 1
+    assert "Invalid --frequency" in res_freq.output
+
+    res_method = runner.invoke(app, ["finops", "forecast", "--method", "arima"])
+    assert res_method.exit_code == 1
+    assert "Invalid --method" in res_method.output
+
+    res_horizon = runner.invoke(app, ["finops", "forecast", "--horizon", "0"])
+    assert res_horizon.exit_code == 1
+    assert "Invalid --horizon" in res_horizon.output
+
+    res_conf = runner.invoke(app, ["finops", "forecast", "--confidence", "0.20"])
+    assert res_conf.exit_code == 1
+    assert "Invalid --confidence" in res_conf.output
