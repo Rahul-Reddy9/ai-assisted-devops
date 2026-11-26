@@ -318,6 +318,31 @@ class Settings(BaseSettings):
         le=90,
         description="Minimum historical data points required to generate expenditure forecasts",
     )
+    finops_agent_provider: Optional[str] = Field(
+        default=None,
+        description="Optional override LLM provider for FinOps advisory agent",
+    )
+    finops_agent_model: Optional[str] = Field(
+        default=None,
+        description="Optional override model identifier for FinOps advisory agent",
+    )
+    finops_agent_timeout_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        le=300.0,
+        description="Timeout in seconds for FinOps advisory agent execution",
+    )
+    finops_agent_max_iterations: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum iterations in FinOps agent reasoning loop",
+    )
+    finops_agent_min_savings_threshold: float = Field(
+        default=10.0,
+        ge=0.0,
+        description="Minimum potential monthly savings threshold to generate advisory recommendations",
+    )
 
     @field_validator("rag_embedding_provider")
     @classmethod

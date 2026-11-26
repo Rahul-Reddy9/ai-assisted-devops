@@ -501,3 +501,146 @@ class CostSummary(BaseModel):
     top_resources: List[Dict[str, Any]] = Field(
         default_factory=list, description="Top spending individual resources"
     )
+
+
+class FinOpsAdvisoryRecommendation(BaseModel):
+    """Actionable FinOps recommendation synthesizing cost, anomaly, rightsizing, or forecast insights."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: str = Field(min_length=1, description="Brief summary title of the recommendation")
+    category: str = Field(
+        description="Classification: compute, storage, database, network, anomaly, general"
+    )
+    priority: str = Field(
+        default="medium", description="Priority level: critical, high, medium, low"
+    )
+    savings_type: str = Field(
+        default="estimated",
+        description="Savings classification: guaranteed (idle/unattached cleanup) or estimated (rightsizing/architecture)",
+    )
+    potential_monthly_savings: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Estimated or guaranteed monthly savings in specified currency",
+    )
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    confidence_score: float = Field(
+        default=0.8, ge=0.0, le=1.0, description="Confidence score from 0.0 to 1.0"
+    )
+    action: str = Field(
+        min_length=1,
+        description="Specific actionable steps to capture savings or mitigate cost risk",
+    )
+    evidence: List[str] = Field(
+        default_factory=list, description="Factual evidence citations supporting the recommendation"
+    )
+    affected_resources: List[str] = Field(
+        default_factory=list, description="Cloud resource IDs associated with this recommendation"
+    )
+
+    @property
+    def potential_annual_savings(self) -> float:
+        """Calculate annualized cost savings."""
+        return round(self.potential_monthly_savings * 12.0, 2)
+
+
+class FinOpsAdvisoryReport(BaseModel):
+    """Holistic executive FinOps advisory report synthesizing cost findings, risks, and strategic guidance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: str = Field(default="FinOps Strategic Advisory Report", min_length=1)
+    generated_at: datetime.datetime = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    executive_summary: str = Field(
+        min_length=1,
+        description="High-level narrative synthesizing spending posture, key cost drivers, and priority interventions",
+    )
+    recommendations: List[FinOpsAdvisoryRecommendation] = Field(
+        default_factory=list,
+        description="Prioritized list of actionable cost optimization recommendations",
+    )
+    total_monthly_savings: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Total identified monthly savings across all recommendations",
+    )
+    guaranteed_monthly_savings: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Immediate guaranteed monthly savings from zero-utilization/unattached cleanup",
+    )
+    estimated_monthly_savings: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Estimated monthly savings from rightsizing and workload adjustments",
+    )
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    anomalies_detected: int = Field(
+        default=0, ge=0, description="Number of cost anomalies accounted for"
+    )
+    historical_excess_spend: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Historical anomalous expenditure identified across observation windows (cost avoidance risk, not recurring savings)",
+    )
+    forecast_trend: str = Field(
+        default="stable",
+        description="Underlying spending trajectory (increasing, decreasing, stable)",
+    )
+    provider: str = Field(
+        default="offline", description="LLM provider or rule-based engine that generated the advice"
+    )
+    model: Optional[str] = Field(
+        default=None, description="LLM model identifier used for synthesis, if applicable"
+    )
+    disclaimer: str = Field(
+        default=(
+            "This advisory report is generated for strategic planning purposes only. "
+            "Automated cloud mutations are disabled. All recommendations must be reviewed "
+            "and validated before applying changes in production environments."
+        ),
+        description="Standard safety and non-mutation disclaimer",
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Operational metadata, engine flags, and timing statistics",
+    )
+
+    @model_validator(mode="after")
+    def compute_savings_if_unset(self) -> "FinOpsAdvisoryReport":
+        """Compute aggregated savings totals if recommendations are provided and totals are zero."""
+        if self.recommendations and self.total_monthly_savings == 0.0:
+            guaranteed = sum(
+                r.potential_monthly_savings
+                for r in self.recommendations
+                if r.savings_type == "guaranteed"
+            )
+            estimated = sum(
+                r.potential_monthly_savings
+                for r in self.recommendations
+                if r.savings_type != "guaranteed"
+            )
+            self.guaranteed_monthly_savings = round(guaranteed, 2)
+            self.estimated_monthly_savings = round(estimated, 2)
+            self.total_monthly_savings = round(guaranteed + estimated, 2)
+        return self
+
+    @property
+    def total_annual_savings(self) -> float:
+        """Calculate annualized total cost savings."""
+        return round(self.total_monthly_savings * 12.0, 2)
+
+    @property
+    def guaranteed_annual_savings(self) -> float:
+        """Calculate annualized guaranteed cost savings."""
+        return round(self.guaranteed_monthly_savings * 12.0, 2)
+
+    @property
+    def estimated_annual_savings(self) -> float:
+        """Calculate annualized estimated cost savings."""
+        return round(self.estimated_monthly_savings * 12.0, 2)

@@ -7,6 +7,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from devops_ai.cli import app
+from devops_ai.observability.metrics import FINOPS_OPERATIONS_TOTAL
 
 runner = CliRunner()
 
@@ -449,3 +450,210 @@ def test_cli_finops_forecast_invalid_inputs():
     res_conf = runner.invoke(app, ["finops", "forecast", "--confidence", "0.20"])
     assert res_conf.exit_code == 1
     assert "Invalid --confidence" in res_conf.output
+
+
+def test_cli_finops_advise_help():
+    res = runner.invoke(app, ["finops", "advise", "--help"])
+    assert res.exit_code == 0
+    assert "--billing-file" in res.output
+    assert "--inventory-file" in res.output
+    assert "--utilization-file" in res.output
+    assert "--offline" in res.output
+    assert "--query" in res.output
+    assert "--output" in res.output
+    assert "--json" in res.output
+
+
+def test_cli_finops_advise_offline_default():
+    res = runner.invoke(app, ["finops", "advise", "--offline"])
+    assert res.exit_code == 0
+    assert "AI-Assisted FinOps Strategic Advisory Report" in res.output
+    assert "Total Identified Monthly Savings" in res.output
+    assert "Advisory Disclaimer" in res.output
+    assert "Prioritized Cost Optimization Recommendations" in res.output
+
+
+def test_cli_finops_advise_offline_json():
+    res = runner.invoke(app, ["finops", "advise", "--offline", "--json"])
+    assert res.exit_code == 0
+    parsed = json.loads(res.output)
+    assert "executive_summary" in parsed
+    assert "total_monthly_savings" in parsed
+    assert "guaranteed_monthly_savings" in parsed
+    assert "estimated_monthly_savings" in parsed
+    assert "recommendations" in parsed
+    assert len(parsed["recommendations"]) > 0
+    assert parsed["provider"] == "offline"
+
+
+def test_cli_finops_advise_output_file(tmp_path: Path):
+    out_file = tmp_path / "advisory_report.json"
+    res = runner.invoke(app, ["finops", "advise", "--offline", "--output", str(out_file)])
+    assert res.exit_code == 0
+    assert out_file.exists()
+    parsed = json.loads(out_file.read_text(encoding="utf-8"))
+    assert "total_monthly_savings" in parsed
+    assert len(parsed["recommendations"]) > 0
+
+
+def test_cli_finops_advise_custom_files(tmp_path: Path):
+    # Minimal custom billing file
+    billing_data = [
+        {
+            "record_id": "rec-1",
+            "provider": "aws",
+            "account_id": "acc-1",
+            "service_name": "AmazonEC2",
+            "resource_id": "i-01",
+            "region": "us-east-1",
+            "cost_amount": 100.0,
+            "currency": "USD",
+            "start_time": "2026-11-01T00:00:00Z",
+            "end_time": "2026-11-01T23:59:59Z",
+        }
+    ]
+    b_file = tmp_path / "billing.json"
+    b_file.write_text(json.dumps(billing_data), encoding="utf-8")
+
+    # Minimal custom inventory file
+    inv_data = [
+        {
+            "resource_id": "vol-orphan",
+            "resource_name": "unattached-vol",
+            "provider": "aws",
+            "category": "storage",
+            "region": "us-east-1",
+            "service_name": "AmazonEC2",
+            "monthly_cost": 50.0,
+            "currency": "USD",
+            "is_attached": False,
+        }
+    ]
+    i_file = tmp_path / "inventory.json"
+    i_file.write_text(json.dumps(inv_data), encoding="utf-8")
+
+    # Telemetry demonstrating unattached volume
+    util_data = [
+        {
+            "resource_id": "vol-orphan",
+            "service_name": "AmazonEC2",
+            "timestamp": "2026-11-20T00:00:00Z",
+            "is_attached": False,
+            "disk_read_bytes_per_sec": 0.0,
+            "disk_write_bytes_per_sec": 0.0,
+        }
+    ]
+    u_file = tmp_path / "utilization.json"
+    u_file.write_text(json.dumps(util_data), encoding="utf-8")
+
+    res = runner.invoke(
+        app,
+        [
+            "finops",
+            "advise",
+            "--offline",
+            "--billing-file",
+            str(b_file),
+            "--inventory-file",
+            str(i_file),
+            "--utilization-file",
+            str(u_file),
+            "--query",
+            "Focus on orphan disk cleanup",
+            "--json",
+        ],
+    )
+    assert res.exit_code == 0
+    parsed = json.loads(res.output)
+    assert parsed["guaranteed_monthly_savings"] == 50.0
+    assert any("vol-orphan" in r.get("affected_resources", []) for r in parsed["recommendations"])
+
+
+def test_cli_finops_telemetry_parity_analyze():
+    """Verify operation telemetry is recorded accurately on success and failure for analyze (F-05)."""
+    succ_before = FINOPS_OPERATIONS_TOTAL.labels(operation="analyze", status="success")._value.get()
+    fail_before = FINOPS_OPERATIONS_TOTAL.labels(operation="analyze", status="failure")._value.get()
+
+    res_ok = runner.invoke(app, ["finops", "analyze", "--json"])
+    assert res_ok.exit_code == 0
+    succ_after = FINOPS_OPERATIONS_TOTAL.labels(operation="analyze", status="success")._value.get()
+    assert succ_after == succ_before + 1
+
+    res_err = runner.invoke(app, ["finops", "analyze", "--start-date", "invalid-date-format"])
+    assert res_err.exit_code != 0
+    fail_after = FINOPS_OPERATIONS_TOTAL.labels(operation="analyze", status="failure")._value.get()
+    assert fail_after == fail_before + 1
+
+
+def test_cli_finops_telemetry_parity_optimize():
+    """Verify operation telemetry is recorded accurately on success and failure for optimize (F-05)."""
+    succ_before = FINOPS_OPERATIONS_TOTAL.labels(
+        operation="optimize", status="success"
+    )._value.get()
+    fail_before = FINOPS_OPERATIONS_TOTAL.labels(
+        operation="optimize", status="failure"
+    )._value.get()
+
+    res_ok = runner.invoke(app, ["finops", "optimize", "--json"])
+    assert res_ok.exit_code == 0
+    succ_after = FINOPS_OPERATIONS_TOTAL.labels(operation="optimize", status="success")._value.get()
+    assert succ_after == succ_before + 1
+
+    res_err = runner.invoke(app, ["finops", "optimize", "--provider", "unsupported_cloud_xyz"])
+    assert res_err.exit_code != 0
+    fail_after = FINOPS_OPERATIONS_TOTAL.labels(operation="optimize", status="failure")._value.get()
+    assert fail_after == fail_before + 1
+
+
+def test_cli_finops_telemetry_parity_anomalies():
+    """Verify operation telemetry is recorded accurately on success and failure for anomalies (F-05)."""
+    succ_before = FINOPS_OPERATIONS_TOTAL.labels(
+        operation="anomalies", status="success"
+    )._value.get()
+    fail_before = FINOPS_OPERATIONS_TOTAL.labels(
+        operation="anomalies", status="failure"
+    )._value.get()
+
+    res_ok = runner.invoke(app, ["finops", "anomalies", "--json"])
+    assert res_ok.exit_code == 0
+    succ_after = FINOPS_OPERATIONS_TOTAL.labels(
+        operation="anomalies", status="success"
+    )._value.get()
+    assert succ_after == succ_before + 1
+
+    res_err = runner.invoke(app, ["finops", "anomalies", "--severity", "invalid_severity_xyz"])
+    assert res_err.exit_code != 0
+    fail_after = FINOPS_OPERATIONS_TOTAL.labels(
+        operation="anomalies", status="failure"
+    )._value.get()
+    assert fail_after == fail_before + 1
+
+
+def test_cli_finops_telemetry_parity_forecast():
+    """Verify operation telemetry is recorded accurately on success and failure for forecast (F-05)."""
+    succ_before = FINOPS_OPERATIONS_TOTAL.labels(
+        operation="forecast", status="success"
+    )._value.get()
+    fail_before = FINOPS_OPERATIONS_TOTAL.labels(
+        operation="forecast", status="failure"
+    )._value.get()
+
+    res_ok = runner.invoke(app, ["finops", "forecast", "--json"])
+    assert res_ok.exit_code == 0
+    succ_after = FINOPS_OPERATIONS_TOTAL.labels(operation="forecast", status="success")._value.get()
+    assert succ_after == succ_before + 1
+
+    res_err = runner.invoke(app, ["finops", "forecast", "--frequency", "hourly"])
+    assert res_err.exit_code != 0
+    fail_after = FINOPS_OPERATIONS_TOTAL.labels(operation="forecast", status="failure")._value.get()
+    assert fail_after == fail_before + 1
+
+
+def test_cli_finops_repeated_invocation_telemetry():
+    """Verify repeated invocations increment operation counter without double-counting (F-05)."""
+    before = FINOPS_OPERATIONS_TOTAL.labels(operation="analyze", status="success")._value.get()
+    for _ in range(3):
+        res = runner.invoke(app, ["finops", "analyze", "--json"])
+        assert res.exit_code == 0
+    after = FINOPS_OPERATIONS_TOTAL.labels(operation="analyze", status="success")._value.get()
+    assert after == before + 3

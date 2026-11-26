@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0
 """Cloud and FinOps cost optimization and observability subsystem."""
 
+from devops_ai.finops.agent import FinOpsAgent
 from devops_ai.finops.analyzer import CostAnalyzer
 from devops_ai.finops.anomaly import CostAnomalyDetector
 from devops_ai.finops.forecast import CostForecaster
@@ -25,6 +26,8 @@ from devops_ai.finops.models import (
     CostAnomaly,
     CostForecast,
     CostSummary,
+    FinOpsAdvisoryRecommendation,
+    FinOpsAdvisoryReport,
     ForecastMethod,
     ForecastPoint,
     ForecastSummary,
@@ -50,6 +53,9 @@ __all__ = [
     "CostForecast",
     "CostForecaster",
     "CostSummary",
+    "FinOpsAdvisoryRecommendation",
+    "FinOpsAdvisoryReport",
+    "FinOpsAgent",
     "ForecastMethod",
     "ForecastPoint",
     "ForecastSummary",

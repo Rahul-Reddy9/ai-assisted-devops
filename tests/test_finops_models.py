@@ -16,6 +16,8 @@ from devops_ai.finops.models import (
     CostAnomaly,
     CostForecast,
     CostSummary,
+    FinOpsAdvisoryRecommendation,
+    FinOpsAdvisoryReport,
     ForecastMethod,
     ForecastPoint,
     ForecastSummary,
@@ -365,3 +367,114 @@ class TestAnomalyAndForecastModels:
         assert summary.daily_average_cost == 100.0
         assert summary.total_p10_cost == 80.0
         assert summary.total_p90_cost == 120.0
+
+    def test_finops_advisory_recommendation_model(self):
+        rec = FinOpsAdvisoryRecommendation(
+            title="Clean up unattached EBS volumes",
+            category="storage",
+            priority="high",
+            savings_type="guaranteed",
+            potential_monthly_savings=150.0,
+            confidence_score=0.95,
+            action="Delete unattached gp3 volumes vol-001 and vol-002",
+            evidence=[
+                "Volume vol-001 unattached for 45 days",
+                "Volume vol-002 unattached for 30 days",
+            ],
+            affected_resources=["vol-001", "vol-002"],
+        )
+        assert rec.title == "Clean up unattached EBS volumes"
+        assert rec.potential_monthly_savings == 150.0
+        assert rec.potential_annual_savings == 1800.0
+        assert rec.savings_type == "guaranteed"
+        assert len(rec.affected_resources) == 2
+
+        # Invariant and bounds validation
+        with pytest.raises(ValidationError):
+            FinOpsAdvisoryRecommendation(
+                title="Negative savings test",
+                category="compute",
+                action="Test",
+                potential_monthly_savings=-10.0,
+            )
+
+        with pytest.raises(ValidationError):
+            FinOpsAdvisoryRecommendation(
+                title="Confidence out of bounds",
+                category="compute",
+                action="Test",
+                confidence_score=1.5,
+            )
+
+        with pytest.raises(ValidationError):
+            # Extra fields forbidden
+            FinOpsAdvisoryRecommendation(
+                title="Extra fields test",
+                category="compute",
+                action="Test",
+                unknown_extra_field="invalid",
+            )
+
+    def test_finops_advisory_report_model(self):
+        rec1 = FinOpsAdvisoryRecommendation(
+            title="Clean unattached disks",
+            category="storage",
+            savings_type="guaranteed",
+            potential_monthly_savings=100.0,
+            action="Delete disk-1",
+        )
+        rec2 = FinOpsAdvisoryRecommendation(
+            title="Downsize oversized instances",
+            category="compute",
+            savings_type="estimated",
+            potential_monthly_savings=250.0,
+            action="Downsize i-001 to t3.medium",
+        )
+
+        report = FinOpsAdvisoryReport(
+            executive_summary="Identified substantial cost optimization opportunities.",
+            recommendations=[rec1, rec2],
+            anomalies_detected=1,
+            forecast_trend="increasing",
+            provider="ollama",
+            model="llama3.2:1b",
+        )
+
+        # Automatic calculation of totals
+        assert report.guaranteed_monthly_savings == 100.0
+        assert report.estimated_monthly_savings == 250.0
+        assert report.total_monthly_savings == 350.0
+        assert report.guaranteed_annual_savings == 1200.0
+        assert report.estimated_annual_savings == 3000.0
+        assert report.total_annual_savings == 4200.0
+        assert "Automated cloud mutations are disabled" in report.disclaimer
+
+        # Extra fields forbidden
+        with pytest.raises(ValidationError):
+            FinOpsAdvisoryReport(
+                executive_summary="Summary",
+                unexpected_field="forbidden",
+            )
+
+    def test_finops_advisory_report_historical_excess_spend_and_currency(self):
+        """Verify historical_excess_spend is tracked as separate risk exposure without affecting savings (F-01, F-03)."""
+        anom_rec = FinOpsAdvisoryRecommendation(
+            title="Investigate anomaly spikes",
+            category="anomaly",
+            savings_type="estimated",
+            potential_monthly_savings=0.0,
+            currency="EUR",
+            action="Audit root causes",
+            evidence=["Historical spike: EUR 450.00"],
+        )
+        report = FinOpsAdvisoryReport(
+            executive_summary="European spending advisory report",
+            recommendations=[anom_rec],
+            currency="EUR",
+            anomalies_detected=2,
+            historical_excess_spend=450.0,
+        )
+        assert report.currency == "EUR"
+        assert report.historical_excess_spend == 450.0
+        assert report.total_monthly_savings == 0.0
+        assert report.total_annual_savings == 0.0

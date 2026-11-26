@@ -42,6 +42,11 @@ def test_default_settings():
     assert settings.finops_forecast_default_horizon_days == 30
     assert settings.finops_forecast_confidence_level == 0.90
     assert settings.finops_forecast_min_observations == 7
+    assert settings.finops_agent_provider is None
+    assert settings.finops_agent_model is None
+    assert settings.finops_agent_timeout_seconds == 60.0
+    assert settings.finops_agent_max_iterations == 5
+    assert settings.finops_agent_min_savings_threshold == 10.0
 
 
 def test_custom_settings_via_env(mock_env):
@@ -200,3 +205,33 @@ def test_finops_anomaly_and_forecast_settings_validation():
         Settings(finops_forecast_confidence_level=0.40)
     with pytest.raises(ValidationError):
         Settings(finops_forecast_confidence_level=1.0)
+
+
+def test_finops_agent_settings():
+    """Verify bounds and custom values for FinOps advisory agent settings."""
+    custom = Settings(
+        finops_agent_provider="gemini",
+        finops_agent_model="gemini-2.5-flash",
+        finops_agent_timeout_seconds=120.0,
+        finops_agent_max_iterations=10,
+        finops_agent_min_savings_threshold=25.0,
+    )
+    assert custom.finops_agent_provider == "gemini"
+    assert custom.finops_agent_model == "gemini-2.5-flash"
+    assert custom.finops_agent_timeout_seconds == 120.0
+    assert custom.finops_agent_max_iterations == 10
+    assert custom.finops_agent_min_savings_threshold == 25.0
+
+    # Bounds validation
+    with pytest.raises(ValidationError):
+        Settings(finops_agent_timeout_seconds=0.5)
+    with pytest.raises(ValidationError):
+        Settings(finops_agent_timeout_seconds=500.0)
+
+    with pytest.raises(ValidationError):
+        Settings(finops_agent_max_iterations=0)
+    with pytest.raises(ValidationError):
+        Settings(finops_agent_max_iterations=50)
+
+    with pytest.raises(ValidationError):
+        Settings(finops_agent_min_savings_threshold=-1.0)

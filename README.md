@@ -86,6 +86,17 @@ Key configuration settings:
 - `FINOPS_IDLE_CPU_THRESHOLD_PCT`: Average CPU percentage below which an instance is considered idle (default: `2.0`).
 - `FINOPS_UNDERUTILIZED_CPU_THRESHOLD_PCT`: Average CPU percentage below which an instance is considered underutilized (default: `15.0`).
 - `FINOPS_IDLE_MEMORY_THRESHOLD_PCT`: Average memory percentage below which a database is considered underutilized (default: `15.0`).
+- `FINOPS_ANOMALY_Z_SCORE_THRESHOLD`: Statistical Z-score threshold for expenditure anomalies (default: `2.5`).
+- `FINOPS_ANOMALY_MIN_OBSERVATIONS`: Minimum historical observation points required to detect anomalies (default: `7`).
+- `FINOPS_ANOMALY_ROLLING_WINDOW_DAYS`: Rolling window size in days for establishing historical baselines (default: `30`).
+- `FINOPS_FORECAST_DEFAULT_HORIZON_DAYS`: Default future horizon in days for projections (default: `30`).
+- `FINOPS_FORECAST_CONFIDENCE_LEVEL`: Confidence level for forecast prediction intervals (default: `0.90`).
+- `FINOPS_FORECAST_MIN_OBSERVATIONS`: Minimum historical data points required for forecasting (default: `7`).
+- `FINOPS_AGENT_PROVIDER`: Optional override LLM provider for FinOps advisory agent (default: `None`, falls back to `DEFAULT_LLM_PROVIDER`).
+- `FINOPS_AGENT_MODEL`: Optional override model identifier for FinOps advisory agent (default: `None`).
+- `FINOPS_AGENT_TIMEOUT_SECONDS`: Timeout in seconds for FinOps advisory agent execution (default: `60.0`).
+- `FINOPS_AGENT_MAX_ITERATIONS`: Maximum iterations in FinOps agent reasoning loop (default: `5`).
+- `FINOPS_AGENT_MIN_SAVINGS_THRESHOLD`: Minimum potential monthly savings threshold to generate advisory recommendations (default: `10.0`).
 
 ---
 
@@ -219,6 +230,21 @@ devops-ai finops optimize --min-savings 50.0 --risk LOW
 # Export optimization recommendations and savings summary to JSON
 devops-ai finops optimize --json
 devops-ai finops optimize --output optimization_report.json
+
+# Run AI-assisted FinOps strategic advisory report on synthetic benchmark
+devops-ai finops advise
+
+# Run 100% offline deterministic rule-based advisory synthesis (no LLMs required)
+devops-ai finops advise --offline
+
+# Advise on custom billing, inventory, and utilization telemetry datasets
+devops-ai finops advise --billing-file ./billing.csv --inventory-file ./inventory.json --utilization-file ./telemetry.json
+
+# Provide strategic guidance intent or focus query
+devops-ai finops advise --query "Focus on eliminating idle disks and database rightsizing"
+
+# Export structured FinOps advisory report as JSON
+devops-ai finops advise --offline --output ./advisory_report.json --json
 ```
 
 ---
@@ -236,8 +262,25 @@ devops-ai finops optimize --output optimization_report.json
 | `devops_ai_docker_available` | Gauge | Local Docker daemon connectivity (1 = available, 0 = offline) | None |
 | `devops_ai_k8s_available` | Gauge | Kubernetes cluster connectivity (1 = available, 0 = offline) | None |
 | `devops_ai_log_anomalies_detected_total` | Counter | Operational anomalies and error bursts detected | `detection_type` |
-| `devops_ai_system_cpu_percent` | Gauge | Host CPU utilization percentage | None |
-| `devops_ai_system_memory_bytes` | Gauge | Host memory in use | None |
+| `devops_ai_system_cpu_usage_percent` | Gauge | Host CPU utilization percentage | None |
+| `devops_ai_system_memory_usage_bytes` | Gauge | Host physical memory in use in bytes | None |
+| `devops_ai_incidents_detected_total` | Counter | Total detected operational incidents | `severity`, `category` |
+| `devops_ai_rca_executions_total` | Counter | Total root cause analysis pipeline executions | `tier`, `status` |
+| `devops_ai_rca_duration_seconds` | Histogram | Latency distribution of root cause analyses | `tier` |
+| `devops_ai_active_incidents` | Gauge | Current unresolved active incidents count | `severity` |
+| `devops_ai_finops_operations_total` | Counter | Total FinOps operations by operation type and outcome status | `operation`, `status` |
+| `devops_ai_finops_operation_duration_seconds` | Histogram | Latency of FinOps operations in seconds | `operation` |
+| `devops_ai_finops_agent_executions_total` | Counter | Total FinOps advisory agent executions by status and provider | `status`, `provider` |
+| `devops_ai_finops_agent_duration_seconds` | Histogram | Latency of FinOps advisory agent synthesis in seconds | `provider` |
+| `devops_ai_finops_recommendations_total` | Counter | Total FinOps recommendations generated | `category`, `confidence_tier`, `savings_type` |
+| `devops_ai_finops_anomalies_identified_total` | Counter | Total spending anomalies identified by severity | `severity` |
+| `devops_ai_finops_savings_identified_dollars_total` | Counter | Cumulative monthly dollar savings identified | `savings_type`, `category` |
+
+### Cardinality & Data Privacy Safeguards
+- **Strict Bounded Labels:** All metric labels (`operation`, `status`, `provider`, `category`, `confidence_tier`, `savings_type`, `severity`) are validated against static enums and whitelists prior to recording.
+- **Zero Sensitive Data Leakage:** High-cardinality dimensions such as cloud resource IDs, account numbers, invoice IDs, project names, and free-form text are **strictly prohibited** in metric labels.
+- **Financial Values in Measurements:** Dollar amounts are tracked exclusively as metric values (not label dimensions), preventing financial leakage through scrape endpoint label indexing.
+
 
 ---
 
@@ -765,6 +808,66 @@ print(f"Optimistic P10 Bound: {forecast.currency} {forecast.total_p10_spend:.2f}
 print(f"Conservative P90 Bound: {forecast.currency} {forecast.total_p90_spend:.2f}")
 if forecast.evaluation_metrics:
     print(f"Fit MAE: ${forecast.evaluation_metrics['mae']:.2f}, RMSE: ${forecast.evaluation_metrics['rmse']:.2f}")
+```
+
+- **AI-Assisted FinOps Advisory Agent (`FinOpsAgent`):**
+  - **Architecture & Lifecycle:** Subclasses `BaseAgent` (`AgentRole.ADVISOR`, capability `FINOPS_ADVISORY`), implementing the standardized execution lifecycle: `plan()` (formulates 2–4 review steps), `step()` (iteratively extracts factual observations from deterministic summaries), `synthesize()` (executive advisory narrative and structured recommendation generation), and `advise()` (high-level programmatic API).
+  - **Prompt Injection Defense & Context Isolation:** All external financial records, service names, resource IDs, and tags are treated as untrusted data. Inputs are enclosed within `<UNTRUSTED_FINOPS_EVIDENCE>` XML boundaries, sanitized to neutralize delimiter breakouts (`[DELIMITER_TAG_NEUTRALIZED]`), and cleansed of cloud credentials via automated secret scrubbing (`scrub_secrets`).
+  - **Grounding & Clamping Invariants:** Recommendations generated by LLMs are strictly cross-checked against deterministic findings. Rightsizing and category-specific savings are clamped against their corresponding deterministic ceilings (e.g. verified downsizing and orphan cleanup bounds), rather than overall cloud spend. Recommendations targeting anomaly mitigation represent historical cost avoidance risk and are enforced at zero recurring monthly savings, preventing phantom annual savings.
+  - **Currency Consistency & Propagation:** Propagates actual source currency (USD, EUR, GBP, etc.) across all reports, calculations, and recommendations. In multi-summary evaluations, detects mixed currencies and rejects them via `CurrencyMismatchError` to protect financial integrity.
+  - **Action-Resource Deduplication:** Automatically deduplicates recommendations targeting identical `(action, resource_id)` tuples, deterministically prioritizing higher confidence and savings while preventing duplicate savings aggregation.
+  - **Guaranteed vs. Estimated Savings Separation:** Strict financial categorization separates immediate guaranteed savings ($100\%$ elimination of unattached volumes and idle static IPs) from estimated savings (workload rightsizing subject to traffic variability and reservation commitments).
+  - **Offline Fallback Engine:** Features an automatic, deterministic rule-based synthesizer. When external LLMs are unreachable or when the `--offline` flag is passed, the agent produces fully grounded executive reports and prioritized recommendations with zero network dependencies.
+  - **Strict Read-Only Non-Mutating Mandate:** Operates exclusively in advisory mode (`read_only=True`). Mutating commands (`rm -rf`, `kubectl delete`, `drop table`) trigger security boundary violations (`AgentSecurityError`). All reports include a prominent human-validation disclaimer.
+  - **Unified Operations Telemetry:** All 5 FinOps subcommands (`analyze`, `optimize`, `anomalies`, `forecast`, `advise`) record standardized Prometheus operation counters and duration metrics (`devops_ai_finops_operations_total` and `devops_ai_finops_operation_duration_seconds`) tracking operational latency and success/failure status.
+
+- **Python Programmatic Advisory SDK:**
+```python
+from devops_ai.finops import (
+    CostAnalyzer,
+    CostAnomalyDetector,
+    CostForecaster,
+    FinOpsAgent,
+    ResourceOptimizer,
+    get_synthetic_anomaly_and_forecast_dataset,
+    get_synthetic_resource_inventory,
+)
+
+# 1. Ingest multi-cloud datasets
+records = get_synthetic_anomaly_and_forecast_dataset()
+resources, utilization = get_synthetic_resource_inventory()
+
+# 2. Run deterministic analytics pipelines
+cost_summary = CostAnalyzer().summarize(records=records)
+opt_summary = ResourceOptimizer().optimize_inventory(resources=resources, utilization_map=utilization)
+anomaly_summary = CostAnomalyDetector().detect_anomalies(records=records)
+forecaster = CostForecaster()
+cost_forecast = forecaster.forecast(records=records, horizon_days=30)
+forecast_summary = forecaster.summarize_forecast(cost_forecast)
+
+# 3. Instantiate and run FinOps Advisory Agent (offline or with LLM)
+agent = FinOpsAgent(offline=True)
+agent.initialize()
+
+report = agent.advise(
+    cost_summary=cost_summary,
+    optimization_summary=opt_summary,
+    anomaly_summary=anomaly_summary,
+    forecast_summary=forecast_summary,
+    user_query="Provide prioritized cost recommendations for Q4",
+)
+
+print(f"Executive Summary:\n{report.executive_summary}\n")
+print(f"Total Monthly Savings: ${report.total_monthly_savings:,.2f} {report.currency}")
+print(f"Guaranteed Savings: ${report.guaranteed_monthly_savings:,.2f} | Estimated: ${report.estimated_monthly_savings:,.2f}")
+print(f"Projected Annual Savings: ${report.total_annual_savings:,.2f}")
+
+for rec in report.recommendations:
+    print(f"\n[{rec.priority.upper()}] {rec.title} ({rec.savings_type})")
+    print(f"  Monthly Savings: ${rec.potential_monthly_savings:,.2f} | Confidence: {rec.confidence_score:.0%}")
+    print(f"  Action: {rec.action}")
+    if rec.affected_resources:
+        print(f"  Resources: {', '.join(rec.affected_resources)}")
 ```
 
 

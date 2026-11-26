@@ -54,7 +54,7 @@ def _escape_untrusted_evidence(text: str) -> str:
     if not text:
         return ""
     sanitized = re.sub(
-        r"(?i)</?\s*(?:UNTRUSTED_AGENT_INPUT|SYSTEM_MANDATE|AGENT_CONTEXT)[^>]*>",
+        r"(?i)</?\s*(?:UNTRUSTED_AGENT_INPUT|SYSTEM_MANDATE|AGENT_CONTEXT|UNTRUSTED_FINOPS_EVIDENCE)[^>]*>",
         "[DELIMITER_TAG_NEUTRALIZED]",
         text,
     )

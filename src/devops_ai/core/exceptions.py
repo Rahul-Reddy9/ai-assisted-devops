@@ -386,3 +386,10 @@ class InsufficientDataError(FinOpsError):
         )
         self.required_count = required_count
         self.actual_count = actual_count
+
+
+class FinOpsAdvisoryError(FinOpsError):
+    """Raised when FinOps advisory agent planning or synthesis fails."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="FINOPS_ADVISORY_ERROR")

@@ -64,6 +64,7 @@ from devops_ai.finops import (
     CostAnalyzer,
     CostAnomalyDetector,
     CostForecaster,
+    FinOpsAgent,
     ForecastMethod,
     OptimizationRisk,
     ResourceCategory,
@@ -75,6 +76,7 @@ from devops_ai.finops import (
     load_cloud_resources,
     load_resource_utilization,
 )
+from devops_ai.observability.metrics import record_finops_operation
 from devops_ai.rag.evaluation import (
     RAGEvaluator,
     get_builtin_evaluation_dataset,
@@ -1793,6 +1795,7 @@ def analyze_cloud_costs(
     """Analyze cloud expenditure with multi-dimensional breakdowns and summaries."""
     setup_logging(level="WARNING")
     settings = get_settings()
+    op_start = time.monotonic()
 
     # 1. Validate date filters if provided
     parsed_start_date: Optional[datetime.date] = None
@@ -1800,6 +1803,7 @@ def analyze_cloud_costs(
         try:
             parsed_start_date = datetime.date.fromisoformat(start_date.strip())
         except ValueError:
+            record_finops_operation("analyze", "failure")
             console.print(
                 Panel(
                     f"[bold red]Invalid --start-date format '{start_date}'. Expected YYYY-MM-DD.[/bold red]",
@@ -1813,6 +1817,7 @@ def analyze_cloud_costs(
         try:
             parsed_end_date = datetime.date.fromisoformat(end_date.strip())
         except ValueError:
+            record_finops_operation("analyze", "failure")
             console.print(
                 Panel(
                     f"[bold red]Invalid --end-date format '{end_date}'. Expected YYYY-MM-DD.[/bold red]",
@@ -1822,6 +1827,7 @@ def analyze_cloud_costs(
             raise typer.Exit(code=1)
 
     if parsed_start_date and parsed_end_date and parsed_start_date > parsed_end_date:
+        record_finops_operation("analyze", "failure")
         console.print(
             Panel(
                 f"[bold red]--start-date ({parsed_start_date}) cannot be later than --end-date ({parsed_end_date}).[/bold red]",
@@ -1843,10 +1849,12 @@ def analyze_cloud_costs(
             records = get_synthetic_billing_dataset()
             detected_schema = "SYNTHETIC_BENCHMARK"
     except BillingDataError as e:
+        record_finops_operation("analyze", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Billing Data Error"))
         raise typer.Exit(code=1)
     except Exception as e:
+        record_finops_operation("analyze", "failure")
         safe_msg = escape(_sanitize_cli_text(str(e)))
         console.print(
             Panel(
@@ -1874,14 +1882,17 @@ def analyze_cloud_costs(
             base_currency=settings.finops_default_currency,
         )
     except CurrencyMismatchError as e:
+        record_finops_operation("analyze", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Currency Mismatch Error"))
         raise typer.Exit(code=1)
     except FinOpsError as e:
+        record_finops_operation("analyze", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="FinOps Error"))
         raise typer.Exit(code=1)
     except Exception as e:
+        record_finops_operation("analyze", "failure")
         safe_msg = escape(_sanitize_cli_text(str(e)))
         console.print(
             Panel(f"[bold red]Analysis failed: {safe_msg}[/bold red]", title="Analysis Error")
@@ -1894,6 +1905,7 @@ def analyze_cloud_costs(
             output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
         except Exception as e:
+            record_finops_operation("analyze", "failure")
             safe_msg = escape(_sanitize_cli_text(str(e)))
             console.print(
                 Panel(
@@ -1905,6 +1917,8 @@ def analyze_cloud_costs(
 
     # 6. Output format: JSON or Rich Console
     if json_output:
+        op_duration = max(0.0, time.monotonic() - op_start)
+        record_finops_operation("analyze", "success", duration_seconds=op_duration)
         typer.echo(summary.model_dump_json(indent=2))
         return
 
@@ -1983,6 +1997,9 @@ def analyze_cloud_costs(
             )
         console.print(res_table)
 
+    op_duration = max(0.0, time.monotonic() - op_start)
+    record_finops_operation("analyze", "success", duration_seconds=op_duration)
+
 
 @finops_app.command("optimize")
 def optimize_cloud_resources(
@@ -2047,6 +2064,7 @@ def optimize_cloud_resources(
     """Analyze infrastructure utilization and generate evidence-based rightsizing recommendations."""
     setup_logging(level="WARNING")
     settings = get_settings()
+    op_start = time.monotonic()
 
     # 1. Parse and validate filters
     prov_filter: Optional[CloudProvider] = None
@@ -2055,6 +2073,7 @@ def optimize_cloud_resources(
         if p_clean in [p.value for p in CloudProvider]:
             prov_filter = CloudProvider(p_clean)
         else:
+            record_finops_operation("optimize", "failure")
             console.print(
                 Panel(
                     f"[bold red]Unknown provider '{provider}'. Allowed: {[p.value for p in CloudProvider]}[/bold red]",
@@ -2069,6 +2088,7 @@ def optimize_cloud_resources(
         if c_clean in [c.value for c in ResourceCategory]:
             cat_filter = ResourceCategory(c_clean)
         else:
+            record_finops_operation("optimize", "failure")
             console.print(
                 Panel(
                     f"[bold red]Unknown category '{category}'. Allowed: {[c.value for c in ResourceCategory]}[/bold red]",
@@ -2083,6 +2103,7 @@ def optimize_cloud_resources(
         if r_clean in [rk.value for rk in OptimizationRisk]:
             risk_limit = OptimizationRisk(r_clean)
         else:
+            record_finops_operation("optimize", "failure")
             console.print(
                 Panel(
                     f"[bold red]Unknown risk ceiling '{risk}'. Allowed: {[rk.value for rk in OptimizationRisk]}[/bold red]",
@@ -2113,10 +2134,12 @@ def optimize_cloud_resources(
         else:
             resources, utilization_map = get_synthetic_resource_inventory()
     except BillingDataError as e:
+        record_finops_operation("optimize", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Data Ingestion Error"))
         raise typer.Exit(code=1)
     except Exception as e:
+        record_finops_operation("optimize", "failure")
         safe_msg = escape(_sanitize_cli_text(str(e)))
         console.print(
             Panel(
@@ -2144,14 +2167,17 @@ def optimize_cloud_resources(
             risk_limit=risk_limit,
         )
     except CurrencyMismatchError as e:
+        record_finops_operation("optimize", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Currency Mismatch Error"))
         raise typer.Exit(code=1)
     except OptimizationError as e:
+        record_finops_operation("optimize", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Optimization Error"))
         raise typer.Exit(code=1)
     except Exception as e:
+        record_finops_operation("optimize", "failure")
         safe_msg = escape(_sanitize_cli_text(str(e)))
         console.print(
             Panel(
@@ -2167,6 +2193,7 @@ def optimize_cloud_resources(
             output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
         except Exception as e:
+            record_finops_operation("optimize", "failure")
             safe_msg = escape(_sanitize_cli_text(str(e)))
             console.print(
                 Panel(
@@ -2178,6 +2205,8 @@ def optimize_cloud_resources(
 
     # 5. Output format: JSON or Rich Console
     if json_output:
+        op_duration = max(0.0, time.monotonic() - op_start)
+        record_finops_operation("optimize", "success", duration_seconds=op_duration)
         typer.echo(summary.model_dump_json(indent=2))
         return
 
@@ -2235,6 +2264,8 @@ def optimize_cloud_resources(
     console.print(
         "\n[dim yellow]Advisory Notice: Recommendations are strictly advisory and require human engineering review prior to execution. Automated modification of cloud infrastructure is disabled.[/dim yellow]"
     )
+    op_duration = max(0.0, time.monotonic() - op_start)
+    record_finops_operation("optimize", "success", duration_seconds=op_duration)
 
 
 @finops_app.command("anomalies")
@@ -2305,6 +2336,7 @@ def detect_cost_anomalies(
     """Detect statistical cost anomalies and expenditure surges across multi-dimensional cloud billing data."""
     setup_logging(level="WARNING")
     settings = get_settings()
+    op_start = time.monotonic()
 
     # 1. Parse date filters
     parsed_start_date: Optional[datetime.date] = None
@@ -2312,6 +2344,7 @@ def detect_cost_anomalies(
         try:
             parsed_start_date = datetime.date.fromisoformat(start_date.strip())
         except ValueError:
+            record_finops_operation("anomalies", "failure")
             console.print(
                 Panel(
                     f"[bold red]Invalid --start-date format '{start_date}'. Expected YYYY-MM-DD.[/bold red]",
@@ -2325,6 +2358,7 @@ def detect_cost_anomalies(
         try:
             parsed_end_date = datetime.date.fromisoformat(end_date.strip())
         except ValueError:
+            record_finops_operation("anomalies", "failure")
             console.print(
                 Panel(
                     f"[bold red]Invalid --end-date format '{end_date}'. Expected YYYY-MM-DD.[/bold red]",
@@ -2334,6 +2368,7 @@ def detect_cost_anomalies(
             raise typer.Exit(code=1)
 
     if parsed_start_date and parsed_end_date and parsed_start_date > parsed_end_date:
+        record_finops_operation("anomalies", "failure")
         console.print(
             Panel(
                 f"[bold red]--start-date ({parsed_start_date}) cannot be later than --end-date ({parsed_end_date}).[/bold red]",
@@ -2348,6 +2383,7 @@ def detect_cost_anomalies(
         try:
             sev_filter = AnomalySeverity(severity.strip().upper())
         except ValueError:
+            record_finops_operation("anomalies", "failure")
             valid_sevs = ", ".join(s.value.lower() for s in AnomalySeverity)
             console.print(
                 Panel(
@@ -2369,10 +2405,12 @@ def detect_cost_anomalies(
         else:
             records = get_synthetic_anomaly_and_forecast_dataset()
     except BillingDataError as e:
+        record_finops_operation("anomalies", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Billing Data Error"))
         raise typer.Exit(code=1)
     except Exception as e:
+        record_finops_operation("anomalies", "failure")
         safe_msg = escape(_sanitize_cli_text(str(e)))
         console.print(
             Panel(
@@ -2404,14 +2442,17 @@ def detect_cost_anomalies(
             end_date=parsed_end_date,
         )
     except CurrencyMismatchError as e:
+        record_finops_operation("anomalies", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Currency Mismatch Error"))
         raise typer.Exit(code=1)
     except CostAnomalyError as e:
+        record_finops_operation("anomalies", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Cost Anomaly Error"))
         raise typer.Exit(code=1)
     except Exception as e:
+        record_finops_operation("anomalies", "failure")
         safe_msg = escape(_sanitize_cli_text(str(e)))
         console.print(
             Panel(
@@ -2427,6 +2468,7 @@ def detect_cost_anomalies(
             output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
         except Exception as e:
+            record_finops_operation("anomalies", "failure")
             safe_msg = escape(_sanitize_cli_text(str(e)))
             console.print(
                 Panel(
@@ -2438,6 +2480,8 @@ def detect_cost_anomalies(
 
     # 6. JSON output
     if json_output:
+        op_duration = max(0.0, time.monotonic() - op_start)
+        record_finops_operation("anomalies", "success", duration_seconds=op_duration)
         typer.echo(summary.model_dump_json(indent=2))
         return
 
@@ -2505,6 +2549,8 @@ def detect_cost_anomalies(
     console.print(
         "\n[dim yellow]Advisory Notice: Anomalies represent statistical deviations in historical spend and require engineering investigation. Automated remediation or resource termination is disabled.[/dim yellow]"
     )
+    op_duration = max(0.0, time.monotonic() - op_start)
+    record_finops_operation("anomalies", "success", duration_seconds=op_duration)
 
 
 @finops_app.command("forecast")
@@ -2576,10 +2622,12 @@ def forecast_cloud_expenditure(
     """Generate forward-looking expenditure projections with prediction intervals (P10/P50/P90)."""
     setup_logging(level="WARNING")
     settings = get_settings()
+    op_start = time.monotonic()
 
     # 1. Validate inputs
     norm_freq = frequency.strip().lower()
     if norm_freq not in ["daily", "monthly"]:
+        record_finops_operation("forecast", "failure")
         console.print(
             Panel(
                 f"[bold red]Invalid --frequency '{frequency}'. Must be 'daily' or 'monthly'.[/bold red]",
@@ -2592,6 +2640,7 @@ def forecast_cloud_expenditure(
     try:
         target_method = ForecastMethod(method.strip().lower())
     except ValueError:
+        record_finops_operation("forecast", "failure")
         valid_methods = ", ".join(m.value for m in ForecastMethod)
         console.print(
             Panel(
@@ -2602,6 +2651,7 @@ def forecast_cloud_expenditure(
         raise typer.Exit(code=1)
 
     if horizon is not None and horizon < 1:
+        record_finops_operation("forecast", "failure")
         console.print(
             Panel(
                 f"[bold red]Invalid --horizon '{horizon}'. Must be at least 1 day.[/bold red]",
@@ -2611,6 +2661,7 @@ def forecast_cloud_expenditure(
         raise typer.Exit(code=1)
 
     if confidence is not None and not (0.50 <= confidence <= 0.99):
+        record_finops_operation("forecast", "failure")
         console.print(
             Panel(
                 f"[bold red]Invalid --confidence '{confidence}'. Must be between 0.50 and 0.99.[/bold red]",
@@ -2631,10 +2682,12 @@ def forecast_cloud_expenditure(
         else:
             records = get_synthetic_anomaly_and_forecast_dataset()
     except BillingDataError as e:
+        record_finops_operation("forecast", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Billing Data Error"))
         raise typer.Exit(code=1)
     except Exception as e:
+        record_finops_operation("forecast", "failure")
         safe_msg = escape(_sanitize_cli_text(str(e)))
         console.print(
             Panel(
@@ -2666,18 +2719,22 @@ def forecast_cloud_expenditure(
         )
         summary = forecaster.summarize_forecast(cost_forecast)
     except CurrencyMismatchError as e:
+        record_finops_operation("forecast", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Currency Mismatch Error"))
         raise typer.Exit(code=1)
     except InsufficientDataError as e:
+        record_finops_operation("forecast", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Insufficient Data Error"))
         raise typer.Exit(code=1)
     except CostForecastError as e:
+        record_finops_operation("forecast", "failure")
         safe_msg = escape(_sanitize_cli_text(e.message))
         console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Cost Forecast Error"))
         raise typer.Exit(code=1)
     except Exception as e:
+        record_finops_operation("forecast", "failure")
         safe_msg = escape(_sanitize_cli_text(str(e)))
         console.print(
             Panel(f"[bold red]Forecasting failed: {safe_msg}[/bold red]", title="Forecast Error")
@@ -2690,6 +2747,7 @@ def forecast_cloud_expenditure(
             output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
         except Exception as e:
+            record_finops_operation("forecast", "failure")
             safe_msg = escape(_sanitize_cli_text(str(e)))
             console.print(
                 Panel(
@@ -2701,6 +2759,8 @@ def forecast_cloud_expenditure(
 
     # 5. JSON output
     if json_output:
+        op_duration = max(0.0, time.monotonic() - op_start)
+        record_finops_operation("forecast", "success", duration_seconds=op_duration)
         typer.echo(summary.model_dump_json(indent=2))
         return
 
@@ -2772,6 +2832,305 @@ def forecast_cloud_expenditure(
     console.print(
         "\n[dim yellow]Advisory Notice: Projections are statistical forecasts based on historical spending trajectories. In-sample fit metrics indicate historical model alignment and do not guarantee future predictive accuracy. Zero-clamped prediction intervals are Gaussian approximations for planning purposes and are not financial guarantees.[/dim yellow]"
     )
+    op_duration = max(0.0, time.monotonic() - op_start)
+    record_finops_operation("forecast", "success", duration_seconds=op_duration)
+
+
+@finops_app.command("advise")
+def advise_finops_strategy(
+    billing_file: Optional[Path] = typer.Option(
+        None,
+        "--billing-file",
+        "--file",
+        "-f",
+        help="Path to JSON or CSV cloud billing records file (defaults to built-in synthetic benchmark).",
+    ),
+    inventory_file: Optional[Path] = typer.Option(
+        None,
+        "--inventory-file",
+        "-i",
+        help="Path to JSON cloud resource inventory file (defaults to built-in synthetic inventory).",
+    ),
+    utilization_file: Optional[Path] = typer.Option(
+        None,
+        "--utilization-file",
+        "-u",
+        help="Optional path to JSON resource utilization metrics dataset.",
+    ),
+    provider: Optional[str] = typer.Option(
+        None,
+        "--provider",
+        "-p",
+        help="LLM provider for FinOps advisory synthesis ('ollama', 'gemini', or custom).",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="LLM model identifier to utilize for advisory synthesis.",
+    ),
+    offline: bool = typer.Option(
+        False,
+        "--offline",
+        help="Execute 100% offline rule-based deterministic synthesis without calling external LLMs.",
+    ),
+    query: Optional[str] = typer.Option(
+        None,
+        "--query",
+        "-q",
+        help="Optional guidance query or focal strategic intent (e.g. 'Focus on storage cleanup').",
+    ),
+    allowed_root: Optional[Path] = typer.Option(
+        None,
+        "--allowed-root",
+        help="Permitted filesystem root directory to enforce path traversal safety.",
+    ),
+    output_path: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Path to save full JSON advisory report.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output raw FinOps advisory report as JSON to stdout.",
+    ),
+):
+    """Synthesize holistic AI-assisted FinOps advisory recommendations and strategic cost optimization."""
+    setup_logging(level="WARNING")
+    settings = get_settings()
+    op_start = time.monotonic()
+
+    # 1. Ingest billing telemetry
+    try:
+        if billing_file:
+            records, _ = load_billing_records(
+                path=billing_file,
+                allowed_root=allowed_root,
+                max_records=settings.finops_max_records,
+                max_file_size_bytes=settings.finops_max_billing_file_size_bytes,
+            )
+        else:
+            records = get_synthetic_anomaly_and_forecast_dataset()
+    except BillingDataError as e:
+        record_finops_operation("advise", "failure")
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Billing Data Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        record_finops_operation("advise", "failure")
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]Failed to load billing records: {safe_msg}[/bold red]",
+                title="Import Error",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 2. Ingest resource inventory and utilization
+    try:
+        if inventory_file:
+            resources = load_cloud_resources(
+                path=inventory_file,
+                allowed_root=allowed_root,
+                max_records=settings.finops_max_records,
+                max_file_size_bytes=settings.finops_max_billing_file_size_bytes,
+            )
+            utilization_map = {}
+            if utilization_file:
+                raw_utils = load_resource_utilization(
+                    path=utilization_file,
+                    allowed_root=allowed_root,
+                    max_records=settings.finops_max_records,
+                    max_file_size_bytes=settings.finops_max_billing_file_size_bytes,
+                )
+                for u in raw_utils:
+                    utilization_map.setdefault(u.resource_id, []).append(u)
+        else:
+            resources, utilization_map = get_synthetic_resource_inventory()
+    except BillingDataError as e:
+        record_finops_operation("advise", "failure")
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Data Ingestion Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        record_finops_operation("advise", "failure")
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]Failed to load optimization datasets: {safe_msg}[/bold red]",
+                title="Import Error",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 3. Execute deterministic FinOps analytics engines
+    try:
+        analyzer = CostAnalyzer()
+        cost_summary = analyzer.summarize(
+            records=records, base_currency=settings.finops_default_currency
+        )
+
+        optimizer = ResourceOptimizer(
+            idle_cpu_threshold=settings.finops_idle_cpu_threshold_pct,
+            underutilized_cpu_threshold=settings.finops_underutilized_cpu_threshold_pct,
+            idle_memory_threshold=settings.finops_idle_memory_threshold_pct,
+        )
+        opt_summary = optimizer.optimize_inventory(
+            resources=resources,
+            utilization_map=utilization_map,
+            base_currency=settings.finops_default_currency,
+        )
+
+        detector = CostAnomalyDetector(
+            z_score_threshold=settings.finops_anomaly_z_score_threshold,
+            min_observations=settings.finops_anomaly_min_observations,
+            rolling_window_days=settings.finops_anomaly_rolling_window_days,
+        )
+        anomaly_summary = detector.detect_anomalies(
+            records=records,
+            base_currency=settings.finops_default_currency,
+        )
+
+        forecaster = CostForecaster(
+            default_horizon_days=settings.finops_forecast_default_horizon_days,
+            confidence_level=settings.finops_forecast_confidence_level,
+            min_observations=settings.finops_forecast_min_observations,
+        )
+        cost_forecast = forecaster.forecast(
+            records=records,
+            horizon_days=settings.finops_forecast_default_horizon_days,
+            base_currency=settings.finops_default_currency,
+        )
+        forecast_summary = forecaster.summarize_forecast(cost_forecast)
+    except CurrencyMismatchError as e:
+        record_finops_operation("advise", "failure")
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="Currency Mismatch Error"))
+        raise typer.Exit(code=1)
+    except (OptimizationError, CostAnomalyError, CostForecastError, InsufficientDataError) as e:
+        record_finops_operation("advise", "failure")
+        safe_msg = escape(_sanitize_cli_text(e.message))
+        console.print(Panel(f"[bold red]{safe_msg}[/bold red]", title="FinOps Engine Error"))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        record_finops_operation("advise", "failure")
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]Analytics execution failed: {safe_msg}[/bold red]", title="Engine Error"
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 4. Execute AI FinOps Advisory Agent
+    try:
+        agent = FinOpsAgent(
+            provider_name=provider,
+            model=model,
+            offline=offline,
+            settings=settings,
+        )
+        agent.initialize()
+        report = agent.advise(
+            cost_summary=cost_summary,
+            optimization_summary=opt_summary,
+            anomaly_summary=anomaly_summary,
+            forecast_summary=forecast_summary,
+            user_query=query,
+        )
+        op_duration = time.monotonic() - op_start
+        record_finops_operation("advise", "success", duration_seconds=op_duration)
+    except Exception as e:
+        record_finops_operation("advise", "failure")
+        safe_msg = escape(_sanitize_cli_text(str(e)))
+        console.print(
+            Panel(
+                f"[bold red]FinOps advisory agent failed: {safe_msg}[/bold red]",
+                title="Advisory Failed",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    # 5. Output file export
+    if output_path:
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(report.model_dump_json(indent=2))
+            console.print(f"[green]Successfully saved advisory report to {output_path}[/green]")
+        except Exception as e:
+            console.print(
+                Panel(
+                    f"[bold red]Failed to write advisory report to '{output_path}': {escape(str(e))}[/bold red]",
+                    title="Export Error",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    # 6. JSON output
+    if json_output:
+        typer.echo(report.model_dump_json(indent=2))
+        return
+
+    # 7. Rich Human-Readable Output
+    def _fmt_money(val: float) -> str:
+        return f"{report.currency} {val:,.2f}" if report.currency != "USD" else f"${val:,.2f}"
+
+    hist_excess_note = ""
+    if report.historical_excess_spend > 0:
+        hist_excess_note = f" | [bold]Historical Anomaly Variance:[/bold] [yellow]{_fmt_money(report.historical_excess_spend)}[/yellow] (Cost Avoidance)"
+
+    panel_text = (
+        f"[bold]Executive Summary:[/bold]\n{report.executive_summary}\n\n"
+        f"--------------------------------------------------\n"
+        f"[bold]Total Identified Monthly Savings:[/bold] [bold green]{_fmt_money(report.total_monthly_savings)} {report.currency}[/bold green] "
+        f"([green]Guaranteed: {_fmt_money(report.guaranteed_monthly_savings)}[/green] | [cyan]Estimated: {_fmt_money(report.estimated_monthly_savings)}[/cyan])\n"
+        f"[bold]Projected Annual Savings:[/bold] [bold green]{_fmt_money(report.total_annual_savings)} {report.currency}[/bold green]\n"
+        f"[bold]Anomalies Accounted:[/bold] {report.anomalies_detected}{hist_excess_note} | [bold]Forecast Trajectory:[/bold] {report.forecast_trend.upper()}\n"
+        f"[bold]Advisory Provider / Engine:[/bold] {report.provider.upper()}"
+        + (f" ({report.model})" if report.model else "")
+    )
+
+    console.print(
+        Panel(
+            panel_text,
+            title="[bold green]AI-Assisted FinOps Strategic Advisory Report[/bold green]",
+        )
+    )
+
+    if report.recommendations:
+        rec_table = Table(title="Prioritized Cost Optimization Recommendations", show_header=True)
+        rec_table.add_column("Priority", style="bold", width=10)
+        rec_table.add_column("Category", style="cyan", width=12)
+        rec_table.add_column("Type", width=12)
+        rec_table.add_column("Monthly Savings", justify="right", style="green", width=16)
+        rec_table.add_column("Confidence", justify="right", width=12)
+        rec_table.add_column("Recommendation & Action")
+
+        prio_colors = {
+            "critical": "bold red",
+            "high": "red",
+            "medium": "yellow",
+            "low": "cyan",
+        }
+
+        for rec in report.recommendations:
+            p_style = prio_colors.get(rec.priority.lower(), "white")
+            type_style = "green" if rec.savings_type == "guaranteed" else "cyan"
+            rec_table.add_row(
+                f"[{p_style}]{rec.priority.upper()}[/{p_style}]",
+                rec.category.upper(),
+                f"[{type_style}]{rec.savings_type.capitalize()}[/{type_style}]",
+                _fmt_money(rec.potential_monthly_savings),
+                f"{rec.confidence_score:.0%}",
+                f"[bold]{rec.title}[/bold]\n[dim]{rec.action}[/dim]",
+            )
+        console.print(rec_table)
+
+    console.print(f"\n[dim yellow]Advisory Disclaimer: {report.disclaimer}[/dim yellow]")
 
 
 def main():
