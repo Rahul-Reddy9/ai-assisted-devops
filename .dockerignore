@@ -1,0 +1,72 @@
+# Copyright 2026 Rahul Reddy
+# Licensed under the Apache License, Version 2.0
+# .dockerignore for AI-Assisted DevOps Platform
+
+# Version control systems
+.git/
+.github/
+.gitignore
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing and coverage caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Build and distribution artifacts
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Secrets, environment files, and credentials
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE, editor, and OS metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local persistent data, databases, and logs
+data/
+.devops_ai/
+*.log
+*.sqlite
+*.sqlite3
+
+# Project artifacts and scratch directories
+.gemini/
+brain/
+scratch/
+
+# Legacy workshop and tutorial materials (not part of production wheel)
+day-*/
+grafana/

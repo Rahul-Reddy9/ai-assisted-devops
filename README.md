@@ -873,6 +873,151 @@ for rec in report.recommendations:
 
 ---
 
+## Containerization & Docker Deployment (Phase 7)
+
+DevOps AI provides a production-grade, hardened, multi-stage Docker container designed specifically for headless CLI operations and continuous observability telemetry.
+
+### Docker Image Architecture
+
+The image is built using a two-stage strategy to minimize attack surface and image size:
+1. **Stage 1 (Builder):** Based on `python:3.11-slim`, installs build tooling (`hatchling`, `build`), copies package metadata and source code, and builds a clean pure-Python distribution wheel without cache artifacts.
+2. **Stage 2 (Runtime):** Clean `python:3.11-slim` base that installs the wheel and its dependencies. Development tools, compilers, test suites, and package caches are completely excluded from the runtime layer.
+
+```mermaid
+flowchart LR
+    subgraph Builder_Stage["Stage 1: Builder (python:3.11-slim)"]
+        Src["Source & Config<br/>(src/, pyproject.toml)"]
+        Hatch["Hatchling Builder"]
+        Wheel["Distribution Wheel<br/>(/build/dist/*.whl)"]
+        Src --> Hatch --> Wheel
+    end
+
+    subgraph Runtime_Stage["Stage 2: Runtime (python:3.11-slim)"]
+        NonRoot["Non-Root User<br/>(devopsai:10001)"]
+        PipInstall["Wheel Installation<br/>(pip install /tmp/*.whl)"]
+        Entry["CLI Entrypoint<br/>(devops-ai)"]
+        Health["Healthcheck<br/>(devops-ai health check)"]
+        Wheel -->|COPY --from=builder| PipInstall
+        NonRoot --> PipInstall --> Entry
+        Entry --> Health
+    end
+```
+
+### Container Security Features
+- **Dedicated Non-Root User:** Runs strictly as non-root user `devopsai` (`UID:GID 10001:10001`), adhering to enterprise container security standards and preventing privilege escalation.
+- **No Embedded Credentials:** The `.dockerignore` strictly excludes `.env` files, local caches (`.pytest_cache`, `.ruff_cache`), and git history (`.git`). Cloud credentials and API keys are never baked into image layers.
+- **Slim Attack Surface:** Omits shell utilities, compilers, and test suites from the runtime image.
+- **Built-in Health Checks:** Incorporates a native Docker `HEALTHCHECK` running `devops-ai health check` every 30 seconds to evaluate process liveness and storage readiness.
+
+### Building the Docker Image
+
+To build the image locally using the standard Docker CLI:
+```bash
+docker build -t devops-ai:latest .
+```
+*(Note: Requires an active Docker daemon. When building in air-gapped or CI environments, pre-cached base images can be utilized.)*
+
+### Running the CLI in a Container
+
+The container entrypoint defaults to `devops-ai`. You can invoke any CLI subcommand directly:
+
+```bash
+# Print version information
+docker run --rm devops-ai:latest version
+
+# View top-level help and available commands
+docker run --rm devops-ai:latest --help
+```
+
+### Executing FinOps Commands (Offline-First)
+
+The FinOps subsystem is completely offline-first and requires no external network or LLM connectivity. Mount local billing datasets into the container's `/app/data` volume:
+
+```bash
+# Analyze AWS/GCP/Azure billing CSV dataset
+docker run --rm \
+  -v $(pwd)/billing_data:/app/data \
+  devops-ai:latest finops analyze /app/data/sample_costs.csv
+
+# Detect expenditure anomalies using rolling statistical baselines
+docker run --rm \
+  -v $(pwd)/billing_data:/app/data \
+  devops-ai:latest finops anomalies /app/data/sample_costs.csv --threshold 2.5
+
+# Generate 30-day polynomial cost projections
+docker run --rm \
+  -v $(pwd)/billing_data:/app/data \
+  devops-ai:latest finops forecast /app/data/sample_costs.csv --horizon 30
+
+# Generate grounded FinOps advisory recommendations (deterministic offline mode)
+docker run --rm \
+  -v $(pwd)/billing_data:/app/data \
+  devops-ai:latest finops advise --billing-file /app/data/sample_costs.csv --offline
+```
+
+### Running the Prometheus Metrics & Health Server
+
+To run the continuous observability daemon in background mode with port 9090 exposed:
+
+```bash
+docker run -d \
+  --name devops-ai-metrics \
+  -p 9090:9090 \
+  --restart unless-stopped \
+  devops-ai:latest metrics serve --host 0.0.0.0 --port 9090
+```
+
+Verify endpoints from your host workstation:
+- **Prometheus Metrics:** `http://localhost:9090/metrics`
+- **Liveness Probe:** `http://localhost:9090/healthz` (or `/livez`)
+- **Readiness Probe:** `http://localhost:9090/readyz`
+
+### Inspecting Container Health
+
+The container includes a native Docker health check configured with:
+- **Interval:** 30s
+- **Timeout:** 10s
+- **Start Period:** 5s
+- **Retries:** 3
+- **Command:** `devops-ai health check`
+
+Inspect the live health status using Docker CLI:
+```bash
+# Inspect container health status
+docker inspect --format='{{json .State.Health}}' devops-ai-metrics
+
+# Execute health probe manually inside the running container
+docker exec -it devops-ai-metrics devops-ai health check
+
+# Output health evaluation in structured JSON format
+docker exec -it devops-ai-metrics devops-ai health check --json
+```
+
+### Configuring Optional Environment Variables
+
+While core operations (FinOps, health checks, log analysis) operate offline without credentials, optional AI providers can be configured via environment flags or an external environment file:
+
+```bash
+# Option A: Passing specific environment variables
+docker run --rm \
+  -e DEFAULT_LLM_PROVIDER=gemini \
+  -e GOOGLE_API_KEY="your-gemini-api-key" \
+  devops-ai:latest provider test
+
+# Option B: Connecting to Ollama running on host (Docker Desktop)
+docker run --rm \
+  -e DEFAULT_LLM_PROVIDER=ollama \
+  -e OLLAMA_HOST="http://host.docker.internal:11434" \
+  devops-ai:latest provider test
+
+# Option C: Passing an environment file
+docker run --rm \
+  --env-file .env \
+  devops-ai:latest incident triage sample_incident.json
+```
+
+---
+
 ## Security & Reliability Principles
 - **Read-Only Operations:** All container and Kubernetes monitoring commands operate in a strictly non-mutating manner. The suite never modifies, scales, restarts, or deletes running workloads.
 - **Zero-Hang Timeout Enforcement:** All network calls, health probes, Docker queries, and Kubernetes API requests enforce strict timeouts, ensuring commands never hang when external services or daemons are unreachable.
