@@ -1,0 +1,26 @@
+# Copyright 2026 Rahul Reddy
+# Licensed under the Apache License, Version 2.0
+# Prometheus Scrape Configuration for DevOps AI Observability Stack
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: "devops-ai"
+    metrics_path: "/metrics"
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["devops-ai:9090"]
+        labels:
+          app: "devops-ai"
+          environment: "local"
+
+  - job_name: "prometheus"
+    metrics_path: "/metrics"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          app: "prometheus"

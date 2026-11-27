@@ -1016,6 +1016,80 @@ docker run --rm \
   devops-ai:latest incident triage sample_incident.json
 ```
 
+### Local Monitoring Stack with Docker Compose
+
+DevOps AI provides a turnkey local observability stack defined in `docker-compose.yml`, orchestrating the DevOps AI metrics daemon, Prometheus, and Grafana in an isolated bridge network.
+
+```mermaid
+flowchart LR
+    subgraph Compose_Stack["Docker Compose Monitoring Stack (devops-ai-network)"]
+        App["devops-ai (container: devops-ai-metrics)<br/>HTTP :9090 (/metrics, /healthz, /readyz)"]
+        Prom["Prometheus (container: devops-ai-prometheus)<br/>Host :9091 -> Container :9090"]
+        Graf["Grafana (container: devops-ai-grafana)<br/>Host :3000 -> Container :3000"]
+        App -->|Scraped every 5s| Prom
+        Prom -->|Datasource proxy| Graf
+    end
+
+    HostUser["Developer Workstation"] -->|View Metrics :9090| App
+    HostUser -->|Prometheus UI :9091| Prom
+    HostUser -->|Dashboards :3000| Graf
+```
+
+#### Prerequisites
+- Docker Engine v20.10+ and Docker Compose v2.0+ (or Docker Desktop).
+- *Note:* The Compose configuration is statically validated (`docker compose config`). Live runtime execution requires the Docker daemon to be running.
+
+#### Starting the Stack
+Launch the complete monitoring stack with a single command:
+```bash
+docker compose up -d --build
+```
+This builds the local `devops-ai:local` image, starts the services in detached mode, and initializes data volumes.
+
+#### Checking Service Status
+Verify container health and port bindings:
+```bash
+docker compose ps
+```
+The `prometheus` service depends on `devops-ai` reporting `healthy` via its internal healthcheck probe (`devops-ai health check`).
+
+#### Accessing Monitoring Endpoints
+Once running, the services are accessible from your host browser:
+- **DevOps AI Metrics & Probes:** [http://localhost:9090](http://localhost:9090)
+  - `/metrics` – Prometheus exposition format
+  - `/healthz` – Liveness evaluation
+  - `/readyz` – Storage and memory readiness probe
+- **Prometheus UI:** [http://localhost:9091](http://localhost:9091)
+  - Navigate to **Status > Targets** to view the `devops-ai` scrape endpoint (`devops-ai:9090`).
+  - *Note: Host port 9091 is mapped to container port 9090 to avoid port conflicts with the DevOps AI metrics server.*
+- **Grafana Dashboards:** [http://localhost:3000](http://localhost:3000)
+  - **Initial Credentials:** Username: `admin`, Password: `admin` (or configured via `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD`).
+  - **Dashboard:** Navigate to **Dashboards > DevOps AI > DevOps AI — Observability & Telemetry** for real-time visualization of generations, errors, provider latencies, and system health.
+
+#### Viewing Service Logs
+Stream logs across all services or target a specific container:
+```bash
+# Follow logs for all services
+docker compose logs -f
+
+# Follow logs for the DevOps AI metrics daemon specifically
+docker compose logs -f devops-ai
+```
+
+#### Stopping the Stack
+To gracefully stop the running containers:
+```bash
+docker compose down
+```
+Application data, Prometheus time-series metrics, and Grafana session states are preserved in named Docker volumes (`devops_ai_data`, `prometheus_data`, `grafana_data`).
+
+#### Removing Persistent Data (Optional)
+> [!WARNING]
+> Running `docker compose down -v` permanently deletes all historical Prometheus time-series data, incident records, and Grafana settings stored in volumes.
+```bash
+docker compose down -v
+```
+
 ---
 
 ## Security & Reliability Principles
