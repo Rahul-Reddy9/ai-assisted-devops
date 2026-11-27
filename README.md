@@ -1167,6 +1167,104 @@ pip-audit
 
 ---
 
+## Container Image Publishing & GHCR Deployment (Phase 7 Commit 4)
+
+Production container images for DevOps AI are automatically built and published to the **GitHub Container Registry (GHCR)** via [`.github/workflows/publish.yml`](.github/workflows/publish.yml).
+
+### 1. Image Registry Location
+Published container images are hosted at:
+```text
+ghcr.io/<owner>/ai-assisted-devops:<tag>
+```
+
+### 2. Automated Publishing Pipeline
+The publication workflow triggers automatically on:
+- **Pushes to `main` (Default Branch):** Publishes the branch tag (`main`), short commit SHA (`sha-<hash>`), and the `latest` tag (`type=raw,value=latest,enable={{is_default_branch}}`). Default-branch builds publish `latest`.
+- **Version Tags (`v*`):** Publishes semantic version tags (e.g., `1.0.0`, `1.0`, `1`) and short commit SHA tags (`sha-<hash>`). Version-tag builds do NOT publish `latest` unless explicitly configured.
+- **Manual Dispatch (`workflow_dispatch`):** Supports on-demand builds directly from the GitHub Actions console.
+- *Pull requests never publish container images.*
+
+### 3. Required GitHub Repository Package Permissions
+The workflow uses the standard `${{ secrets.GITHUB_TOKEN }}` with explicit permissions:
+```yaml
+permissions:
+  contents: read
+  packages: write
+```
+Ensure that GitHub Actions is granted **Read and write permissions** under **Settings > Actions > General > Workflow permissions** in your repository.
+
+### 4. Pulling the Published Image
+To pull the latest production image from GHCR:
+```bash
+docker pull ghcr.io/<owner>/ai-assisted-devops:latest
+```
+
+### 5. Running the Published Image
+Run any CLI subcommand directly using the published image:
+```bash
+# Print version and build information
+docker run --rm ghcr.io/<owner>/ai-assisted-devops:latest version
+
+# Execute offline FinOps billing analysis
+docker run --rm \
+  -v $(pwd)/billing_data:/app/data \
+  ghcr.io/<owner>/ai-assisted-devops:latest finops analyze /app/data/sample_costs.csv
+
+# Run the standalone Prometheus metrics daemon
+docker run -d \
+  --name devops-ai-metrics \
+  -p 9090:9090 \
+  ghcr.io/<owner>/ai-assisted-devops:latest metrics serve --host 0.0.0.0 --port 9090
+```
+
+### 6. Production Deployment with Docker Compose (GHCR Image)
+By default, `docker-compose.yml` builds from local source (`devops-ai:local`). To deploy using the published GHCR image without rebuilding:
+
+```bash
+# Specify the published GHCR image
+export DEVOPS_AI_IMAGE=ghcr.io/<owner>/ai-assisted-devops:latest
+
+# Launch the monitoring stack with the remote image
+docker compose up -d
+```
+
+### 7. Secure Grafana Credential Configuration
+In production, override the default Grafana credentials using environment variables or a `.env` file:
+```bash
+export GRAFANA_ADMIN_USER="production_admin"
+export GRAFANA_ADMIN_PASSWORD="YourStrongSecurePassword123!"
+docker compose up -d
+```
+
+### 8. Creating and Pushing a Version Tag (Release Process)
+*(Note: Documented for release maintainers. Do not execute unless performing an authorized release).*
+
+To trigger a formal semantic version release build:
+```bash
+# 1. Create an annotated git tag
+git tag -a v1.0.0 -m "Release v1.0.0"
+
+# 2. Push the tag to GitHub
+git push origin v1.0.0
+```
+GitHub Actions will automatically build the image, extract semantic version tags (`1.0.0`, `1.0`, `1`) along with the commit SHA tag (`sha-<hash>`), and publish them to GHCR. Note that under the default tagging policy (`enable={{is_default_branch}}`), version-tag builds publish semantic version tags and SHA tags, but do NOT publish `latest` unless explicitly configured.
+
+### 9. Inspecting Published Image Tags
+To inspect published packages and tags:
+- In GitHub, navigate to **Code > Packages** on the repository page.
+- URL: `https://github.com/<owner>/ai-assisted-devops/pkgs/container/ai-assisted-devops`
+
+### 10. Troubleshooting GHCR Authentication & Access
+- **`unauthorized: authentication required`:** If pulling from a private package repository, authenticate via Docker CLI:
+  ```bash
+  echo $CR_PAT | docker login ghcr.io -u <username> --password-stdin
+  ```
+  *(Requires a Personal Access Token with `read:packages` scope).*
+- **`denied: installation not allowed to Create organization package`:** In organization settings, ensure the repository has permission to publish packages to the organization's container registry.
+- **Making the Package Public:** Navigate to **Package Settings > Danger Zone > Change package visibility** and select **Public** if unauthenticated public pulls are desired.
+
+---
+
 ## Security & Reliability Principles
 - **Read-Only Operations:** All container and Kubernetes monitoring commands operate in a strictly non-mutating manner. The suite never modifies, scales, restarts, or deletes running workloads.
 - **Zero-Hang Timeout Enforcement:** All network calls, health probes, Docker queries, and Kubernetes API requests enforce strict timeouts, ensuring commands never hang when external services or daemons are unreachable.

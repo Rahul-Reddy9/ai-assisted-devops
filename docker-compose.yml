@@ -7,7 +7,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: devops-ai:local
+    image: ${DEVOPS_AI_IMAGE:-devops-ai:local}
     container_name: devops-ai-metrics
     command: ["metrics", "serve", "--host", "0.0.0.0", "--port", "9090"]
     ports:
