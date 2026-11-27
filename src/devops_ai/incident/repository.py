@@ -343,7 +343,22 @@ class IncidentRepository:
                     closed_at_str = raw.get("closed_at") or raw.get("updated_at")
                     if closed_at_str:
                         try:
-                            closed_dt = datetime.datetime.fromisoformat(closed_at_str)
+                            # Normalize trailing UTC Z suffix for Python 3.10 compatibility
+                            if isinstance(closed_at_str, str):
+                                normalized_ts = (
+                                    closed_at_str[:-1] + "+00:00"
+                                    if closed_at_str.endswith(("Z", "z"))
+                                    else closed_at_str
+                                )
+                                closed_dt = datetime.datetime.fromisoformat(normalized_ts)
+                            elif isinstance(closed_at_str, datetime.datetime):
+                                closed_dt = closed_at_str
+                            else:
+                                continue
+
+                            if closed_dt.tzinfo is None:
+                                closed_dt = closed_dt.replace(tzinfo=datetime.timezone.utc)
+
                             if closed_dt < cutoff:
                                 to_delete.append(inc_id)
                         except (ValueError, TypeError):

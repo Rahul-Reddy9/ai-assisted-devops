@@ -95,7 +95,10 @@ def test_quality_job_configuration(ci_workflow: dict):
 
 def test_ruff_pyproject_lint_configuration():
     """Verify pyproject.toml defines explicit lint rule selection."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     pyproject_file = REPO_ROOT / "pyproject.toml"
     assert pyproject_file.is_file(), "pyproject.toml must exist"
@@ -139,7 +142,9 @@ def test_security_job_configuration(ci_workflow: dict):
     )
 
     # Ensure no suppression bypasses (|| true) and verify only approved unpatched ChromaDB CVEs are listed
-    audit_step = next((s for s in steps if "Run Dependency Security Audit" in s.get("name", "")), None)
+    audit_step = next(
+        (s for s in steps if "Run Dependency Security Audit" in s.get("name", "")), None
+    )
     assert audit_step is not None, "Security job must have a 'Run Dependency Security Audit' step"
     audit_cmd = audit_step.get("run", "")
     assert "|| true" not in audit_cmd, "Security audit must not bypass non-zero exit codes"

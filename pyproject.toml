@@ -30,6 +30,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-mock>=3.12.0",
     "ruff>=0.4.0",
+    "tomli>=1.1.0; python_version<'3.11'",
 ]
 ollama = [
     "ollama>=0.4.0",
