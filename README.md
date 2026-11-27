@@ -1,5 +1,7 @@
 # DevOps AI
 
+[![CI](https://github.com/Rahul-Reddy9/ai-assisted-devops/actions/workflows/ci.yml/badge.svg)](https://github.com/Rahul-Reddy9/ai-assisted-devops/actions/workflows/ci.yml)
+
 DevOps AI is an enterprise-grade AI-assisted DevOps engineering suite designed to automate infrastructure generation, system observability, log analysis, and incident remediation.
 
 ## Architecture Overview
@@ -1088,6 +1090,79 @@ Application data, Prometheus time-series metrics, and Grafana session states are
 > Running `docker compose down -v` permanently deletes all historical Prometheus time-series data, incident records, and Grafana settings stored in volumes.
 ```bash
 docker compose down -v
+```
+
+---
+
+## Continuous Integration & Quality Gates (CI/CD)
+
+The DevOps AI platform enforces continuous integration and automated quality gates through GitHub Actions defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+### CI Pipeline Architecture
+
+The workflow executes four decoupled, concurrent jobs on every push and pull request targeting `main`:
+
+```mermaid
+flowchart TD
+    Trigger["Trigger: Push / Pull Request to main"] --> Fork{GitHub Actions Runner}
+
+    subgraph Job_Quality["1. Code Quality & Linting"]
+        Q1["Ruff Linter: ruff check src tests"]
+        Q2["Ruff Formatter: ruff format --check src tests"]
+        Q1 --> Q2
+    end
+
+    subgraph Job_Test["2. Multi-Python Test Matrix"]
+        T1["Python 3.10 Test Runner"]
+        T2["Python 3.11 Test Runner"]
+        T3["Python 3.12 Test Runner"]
+        T4["Python 3.13 Test Runner"]
+    end
+
+    subgraph Job_Build["3. Package Build & Wheel Verification"]
+        B1["Hatchling Wheel Build: python -m build --wheel"]
+        B2["Artifact Verification: dist/*.whl"]
+        B3["Upload Wheel Artifact (actions/upload-artifact)"]
+        B1 --> B2 --> B3
+    end
+
+    subgraph Job_Security["4. Dependency Security Audit"]
+        S1["Install Project & Dependencies"]
+        S2["Audit Dependencies: pip-audit"]
+        S1 --> S2
+    end
+
+    Fork --> Job_Quality
+    Fork --> Job_Test
+    Fork --> Job_Build
+    Fork --> Job_Security
+```
+
+### Key Workflow Capabilities
+- **Multi-Version Python Matrix:** Validates full backward and forward compatibility across Python 3.10, 3.11, 3.12, and 3.13 using standard `ubuntu-latest` runners.
+- **Strict Quality Enforcement:** Fails immediately on any code style violations or unformatted code via `ruff`.
+- **Pure-Python Wheel Verification:** Validates that `hatchling` successfully compiles `devops_ai-0.1.0-py3-none-any.whl` and uploads the wheel artifact for 7-day retention.
+- **Dependency Security Auditing:** Uses `pip-audit` to detect known vulnerabilities across direct and transitive dependencies against the PyPA advisory database.
+- **Least-Privilege Security:** The workflow enforces `permissions: contents: read` and runs with non-privileged access.
+- **Concurrency Management:** Automatically cancels obsolete pull request runs when new commits are pushed, preventing resource contention.
+
+### Running Validation Locally
+
+You can replicate the exact checks executed in GitHub Actions using standard local commands:
+
+```bash
+# 1. Run code quality checks and formatting validation
+ruff check src tests
+ruff format --check src tests
+
+# 2. Run the complete pytest test suite
+pytest -v
+
+# 3. Compile and verify the distribution wheel
+python -m build --wheel
+
+# 4. Audit dependencies for known vulnerabilities
+pip-audit
 ```
 
 ---
