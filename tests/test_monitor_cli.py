@@ -207,6 +207,23 @@ def test_cli_log_analyze_json(tmp_path: Path):
     assert "anomalies" in data
 
 
+def test_cli_log_analyze_json_fallback_when_sklearn_missing(tmp_path: Path):
+    """Verify JSON output remains clean, valid machine-readable JSON even when scikit-learn is absent."""
+    import sys
+
+    log_file = tmp_path / "test.log"
+    log_file.write_text("2026-11-22T10:00:00Z [INFO] test\n", encoding="utf-8")
+
+    with patch.dict(sys.modules, {"sklearn": None, "sklearn.ensemble": None}):
+        result = runner.invoke(app, ["log-analyze", str(log_file), "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["total_entries"] == 1
+        assert "bursts" in data
+        assert "anomalies" in data
+        assert data["detection_method"] == "statistical_percentile"
+
+
 def test_cli_log_analyze_invalid_arguments(tmp_path: Path):
     log_file = tmp_path / "test.log"
     log_file.write_text("line\n", encoding="utf-8")

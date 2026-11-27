@@ -36,7 +36,7 @@ jobs:
       - name: Install Linting Tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "ruff>=0.4.0"
+          python -m pip install "ruff==0.14.10"
 
       - name: Run Ruff Linter
         run: ruff check src tests
@@ -65,9 +65,12 @@ jobs:
       - name: Install Package & Test Dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[dev,full]"
 
       - name: Run Full Pytest Suite
+        env:
+          NO_COLOR: "1"
+          TERM: "dumb"
         run: pytest -v
 
   build:
@@ -120,9 +123,16 @@ jobs:
 
       - name: Install Project & Security Auditing Tool
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip "setuptools>=84.1.0"
           python -m pip install pip-audit
           python -m pip install -e .
 
       - name: Run Dependency Security Audit
-        run: pip-audit --progress-spinner off
+        # Explicitly ignore verified upstream ChromaDB advisories that currently lack PyPI fixes.
+        # Note: DevOps AI uses ChromaDB exclusively as an embedded local file vector store, not a network server.
+        run: |
+          pip-audit --progress-spinner off \
+            --ignore-vuln PYSEC-2026-311 \
+            --ignore-vuln PYSEC-2026-3813 \
+            --ignore-vuln PYSEC-2026-3814 \
+            --ignore-vuln PYSEC-2026-3815

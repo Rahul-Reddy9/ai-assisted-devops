@@ -4,6 +4,7 @@
 
 import json
 from pathlib import Path
+import re
 from typer.testing import CliRunner
 
 from devops_ai.cli import app
@@ -12,18 +13,24 @@ from devops_ai.observability.metrics import FINOPS_OPERATIONS_TOTAL
 runner = CliRunner()
 
 
+def _clean_output(text: str) -> str:
+    """Strip ANSI escape sequences from CLI output for robust substring assertions."""
+    return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
+
+
 def test_cli_finops_help():
     result = runner.invoke(app, ["finops", "--help"])
     assert result.exit_code == 0
-    assert "analyze" in result.output
+    assert "analyze" in _clean_output(result.output)
 
 
 def test_cli_finops_analyze_help():
     result = runner.invoke(app, ["finops", "analyze", "--help"])
     assert result.exit_code == 0
-    assert "--billing-file" in result.output
-    assert "--group-by" in result.output
-    assert "--json" in result.output
+    clean = _clean_output(result.output)
+    assert "--billing-file" in clean
+    assert "--group-by" in clean
+    assert "--json" in clean
 
 
 def test_cli_finops_analyze_default_synthetic():
@@ -171,10 +178,11 @@ def test_cli_finops_analyze_missing_file(tmp_path: Path):
 def test_cli_finops_optimize_help():
     res = runner.invoke(app, ["finops", "optimize", "--help"])
     assert res.exit_code == 0
-    assert "--inventory-file" in res.output
-    assert "--utilization-file" in res.output
-    assert "--min-savings" in res.output
-    assert "--risk" in res.output
+    clean = _clean_output(res.output)
+    assert "--inventory-file" in clean
+    assert "--utilization-file" in clean
+    assert "--min-savings" in clean
+    assert "--risk" in clean
 
 
 def test_cli_finops_optimize_default_synthetic():
@@ -287,11 +295,12 @@ def test_cli_finops_optimize_invalid_arguments():
 def test_cli_finops_anomalies_help():
     result = runner.invoke(app, ["finops", "anomalies", "--help"])
     assert result.exit_code == 0
-    assert "--billing-file" in result.output
-    assert "--service" in result.output
-    assert "--severity" in result.output
-    assert "--z-threshold" in result.output
-    assert "--json" in result.output
+    clean = _clean_output(result.output)
+    assert "--billing-file" in clean
+    assert "--service" in clean
+    assert "--severity" in clean
+    assert "--z-threshold" in clean
+    assert "--json" in clean
 
 
 def test_cli_finops_anomalies_default_synthetic():
@@ -362,11 +371,12 @@ def test_cli_finops_anomalies_invalid_inputs():
 def test_cli_finops_forecast_help():
     result = runner.invoke(app, ["finops", "forecast", "--help"])
     assert result.exit_code == 0
-    assert "--horizon" in result.output
-    assert "--frequency" in result.output
-    assert "--method" in result.output
-    assert "--confidence" in result.output
-    assert "--json" in result.output
+    clean = _clean_output(result.output)
+    assert "--horizon" in clean
+    assert "--frequency" in clean
+    assert "--method" in clean
+    assert "--confidence" in clean
+    assert "--json" in clean
 
 
 def test_cli_finops_forecast_default_synthetic():
@@ -455,13 +465,14 @@ def test_cli_finops_forecast_invalid_inputs():
 def test_cli_finops_advise_help():
     res = runner.invoke(app, ["finops", "advise", "--help"])
     assert res.exit_code == 0
-    assert "--billing-file" in res.output
-    assert "--inventory-file" in res.output
-    assert "--utilization-file" in res.output
-    assert "--offline" in res.output
-    assert "--query" in res.output
-    assert "--output" in res.output
-    assert "--json" in res.output
+    clean = _clean_output(res.output)
+    assert "--billing-file" in clean
+    assert "--inventory-file" in clean
+    assert "--utilization-file" in clean
+    assert "--offline" in clean
+    assert "--query" in clean
+    assert "--output" in clean
+    assert "--json" in clean
 
 
 def test_cli_finops_advise_offline_default():

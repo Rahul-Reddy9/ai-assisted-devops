@@ -4,6 +4,7 @@
 
 import json
 from pathlib import Path
+import re
 import pytest
 from typer.testing import CliRunner
 
@@ -40,18 +41,24 @@ def mock_rag_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     store.add_chunks([chunk], provider.embed_batch([chunk.content]))
 
 
+def _clean_output(text: str) -> str:
+    """Strip ANSI escape sequences from CLI output for robust substring assertions."""
+    return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
+
+
 def test_cli_rag_help():
     result = runner.invoke(app, ["rag", "--help"])
     assert result.exit_code == 0
-    assert "evaluate" in result.output
+    assert "evaluate" in _clean_output(result.output)
 
 
 def test_cli_rag_evaluate_help():
     result = runner.invoke(app, ["rag", "evaluate", "--help"])
     assert result.exit_code == 0
-    assert "--dataset" in result.output
-    assert "--min-precision" in result.output
-    assert "--json" in result.output
+    clean = _clean_output(result.output)
+    assert "--dataset" in clean
+    assert "--min-precision" in clean
+    assert "--json" in clean
 
 
 def test_cli_rag_evaluate_builtin_human_readable():

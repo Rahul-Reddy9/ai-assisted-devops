@@ -6,7 +6,9 @@ import datetime
 import json
 import logging
 import re
+import sys
 from typing import Optional
+from rich.console import Console
 from rich.logging import RichHandler
 
 
@@ -80,17 +82,18 @@ def setup_logging(
     # Avoid duplicate handlers on repeated setup calls
     if not logger.handlers:
         if log_format.lower() == "json":
-            handler = logging.StreamHandler()
+            handler = logging.StreamHandler(sys.stderr)
             handler.setFormatter(JSONLogFormatter())
         elif enable_rich:
             handler = RichHandler(
+                console=Console(stderr=True),
                 rich_tracebacks=True,
                 show_time=True,
                 show_path=False,
                 tracebacks_show_locals=False,
             )
         else:
-            handler = logging.StreamHandler()
+            handler = logging.StreamHandler(sys.stderr)
             formatter = logging.Formatter(
                 "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",

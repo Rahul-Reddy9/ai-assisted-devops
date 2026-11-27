@@ -147,7 +147,7 @@ class LogAnalyzer:
                 method="isolation_forest",
             )
         except ImportError:
-            logger.info(
+            logger.debug(
                 "scikit-learn is not available; falling back to statistical percentile anomaly detection."
             )
 

@@ -1162,8 +1162,28 @@ pytest -v
 python -m build --wheel
 
 # 4. Audit dependencies for known vulnerabilities
-pip-audit
+pip-audit --progress-spinner off \
+  --ignore-vuln PYSEC-2026-311 \
+  --ignore-vuln PYSEC-2026-3813 \
+  --ignore-vuln PYSEC-2026-3814 \
+  --ignore-vuln PYSEC-2026-3815
 ```
+
+### Upstream Dependency Security Advisories & Documented Residual Risk
+
+The continuous security audit pipeline executes `pip-audit` against all project dependencies. As of the current security review, four known upstream security advisories exist for `chromadb` (version `1.5.9`) that remain unresolved upstream (no fixed releases are currently available on PyPI):
+
+- **CVE-2026-45829** (`PYSEC-2026-311`): Pre-authentication code injection in standalone Chroma server.
+- **CVE-2026-45830** (`PYSEC-2026-3813`): Arbitrary collection read/write authorization bypass in multi-tenant server.
+- **CVE-2026-45833** (`PYSEC-2026-3814`): Code injection in standalone Chroma server.
+- **CVE-2026-45831** (`PYSEC-2026-3815`): Collection authorization mismatch in `SimpleRBACAuthorizationProvider`.
+
+#### Operational Scope & Security Boundary
+- **Embedded Local Client Usage:** The project uses ChromaDB strictly through a local, in-process `PersistentClient` for offline vector indexing and retrieval.
+- **No Network Server Exposure:** The project does not intentionally expose or run the standalone ChromaDB network server daemon or multi-tenant HTTP endpoints.
+- **Narrow CI Exclusions:** The current CI security workflow narrowly excludes only the four identified advisories above. Any vulnerability in any other dependency will immediately fail the build.
+- **Documented Residual Risk:** These exclusions represent accepted, documented residual risk due to the absence of upstream patches, **not** resolved vulnerabilities. While local in-process usage avoids direct exposure to network-facing endpoints, it does not eliminate all vulnerability risk.
+- **Network Deployment Caution:** Any deployment or architecture that exposes ChromaDB over a network requires a fresh, comprehensive security assessment and independent mitigation prior to deployment.
 
 ---
 
